@@ -1,272 +1,315 @@
-
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
-const url = require('url');
-const engine = require('./public/engine.js');
-
-function loadEnvFile() {
-  const envPath = path.join(__dirname, '.env');
-  if (!fs.existsSync(envPath)) return;
-  const lines = fs.readFileSync(envPath, 'utf-8').split(/\r?\n/);
-  for (const line of lines) {
-    if (!line || /^\s*#/.test(line) || !line.includes('=')) continue;
-    const idx = line.indexOf('=');
-    const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (key && process.env[key] === undefined) process.env[key] = value;
-  }
-}
-
-loadEnvFile();
+const http = require("http");
 
 const PORT = process.env.PORT || 3000;
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const DB = JSON.parse(fs.readFileSync(path.join(PUBLIC_DIR, 'db.json'), 'utf-8'));
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-};
-
-function sendJson(res, status, payload) {
-  const data = Buffer.from(JSON.stringify(payload));
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': data.length,
-  });
-  res.end(data);
+function send(res, status, content, type = "text/html; charset=utf-8") {
+  res.writeHead(status, { "Content-Type": type });
+  res.end(content);
 }
 
-function sendFile(res, filepath) {
-  fs.readFile(filepath, (err, data) => {
-    if (err) {
-      sendJson(res, 404, { error: 'Not found' });
-      return;
-    }
-    const ext = path.extname(filepath).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-    res.end(data);
-  });
-}
-
-function readBody(req) {
+async function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', chunk => {
+    let body = "";
+    req.on("data", chunk => {
       body += chunk;
-      if (body.length > 4 * 1024 * 1024) {
-        reject(new Error('Request body too large.'));
+      if (body.length > 2 * 1024 * 1024) {
+        reject(new Error("Request too large"));
         req.destroy();
       }
     });
-    req.on('end', () => {
-      if (!body) return resolve({});
+    req.on("end", () => {
       try {
-        resolve(JSON.parse(body));
-      } catch (error) {
-        reject(new Error('Invalid JSON body.'));
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON"));
       }
     });
-    req.on('error', reject);
+    req.on("error", reject);
   });
 }
 
-function buildFallback(localResult, taskText) {
-  const best = localResult?.final?.best;
-  const ranked = (localResult?.final?.ranked || []).slice(0, 3);
-  const recommendation = best
-    ? `Best offline recommendation: start with ${best.code}. Treat it as the most likely core SAC, then validate whether the surrounding wording only describes access removals or actually separate work.`
-    : 'No strong SAC candidate was found locally. Refine the task text or provide more task-card detail.';
-
-  const why = [];
-  if (best) {
-    why.push(`Top local match is ${best.code} based on embedded workbook evidence and SAC definition overlap.`);
-    if (localResult.final.topCoreSegment?.segment) why.push(`Core-like wording: ${localResult.final.topCoreSegment.segment}`);
-    if (localResult.final.accessText) why.push(`Access split: ${localResult.final.accessText}`);
-  }
-  ranked.forEach((item, index) => {
-    why.push(`Alternative ${index + 1}: ${item.code} (${Math.min(99, Math.round(item.score))}% local score).`);
-  });
-
-  const checks = [
-    'Confirm whether the description includes only access removal or a real structural/interior operation.',
-    'Check side / zone / frame / door location against the exact task card wording.',
-    'Compare access MH separately from operation MH before final SAC bundle selection.',
-  ];
-  if (/a321/i.test(taskText || '')) checks.push('Verify whether the task applies to A321-specific door / exit areas.');
-
-  const codes = ranked.map((item, index) => ({
-    code: item.code,
-    role: index === 0 ? 'most likely core SAC' : 'alternative candidate',
-    note: item.definition || 'No definition text found.',
-  }));
-
-  return {
-    mode: 'offline_fallback',
-    recommendation,
-    why,
-    checks,
-    codes,
-    trace: [
-      'No OPENAI_API_KEY found, so the server used offline planner logic.',
-      `Parsed ${localResult?.segments?.length || 0} operation segment(s).`,
-      `Ranked ${localResult?.final?.ranked?.length || 0} SAC candidates from local data.`,
-    ],
-  };
-}
-
-function buildPrompt(taskText, localResult) {
-  const topCandidates = (localResult?.final?.ranked || []).slice(0, 5).map((item) => ({
-    code: item.code,
-    score: Math.min(99, Math.round(item.score)),
-    definition: item.definition,
-    evidence: item.pieces.slice(0, 2).map((piece) => ({
-      op: piece.op,
-      segment: piece.segment,
-      source: piece.source,
-    })),
-  }));
-
-  const segments = (localResult?.segments || []).map((seg) => ({
-    segment: seg.segment,
-    operation: seg.op,
-    type: seg.type,
-    apl: seg.apl ? { row: seg.apl.row, description: seg.apl.description } : null,
-    topCandidate: seg.candidates[0] ? {
-      code: seg.candidates[0].code,
-      score: Math.min(99, Math.round(seg.candidates[0].score)),
-      definition: seg.candidates[0].definition,
-    } : null,
-  }));
-
-  return [
-    'You are an aircraft maintenance planning copilot helping to choose SAC codes from retrieved workbook evidence.',
-    'Be practical and flexible, but never invent evidence that is not in the supplied retrieval context.',
-    'Important rules:',
-    '- Separate access wording from the real core task when possible.',
-    '- Prefer a candidate bundle only when the wording supports it.',
-    '- Mention ambiguity clearly if location / side / frame / aircraft variant is missing.',
-    '- Use the retrieved evidence as primary grounding.',
-    '- Do not claim certainty if evidence is weak.',
-    '- Return JSON only.',
-    '',
-    'Return exactly this JSON shape:',
-    '{',
-    '  "recommendation": "string",',
-    '  "why": ["string", "string"],',
-    '  "checks": ["string", "string"],',
-    '  "codes": [{"code":"string","role":"string","note":"string"}],',
-    '  "trace": ["string", "string"]',
-    '}',
-    '',
-    'TASK TEXT:',
-    taskText,
-    '',
-    'RETRIEVED SEGMENTS:',
-    JSON.stringify(segments, null, 2),
-    '',
-    'TOP CANDIDATES:',
-    JSON.stringify(topCandidates, null, 2),
-    '',
-    'LOCAL SUMMARY:',
-    JSON.stringify({
-      best: localResult?.final?.best ? {
-        code: localResult.final.best.code,
-        score: Math.min(99, Math.round(localResult.final.best.score)),
-      } : null,
-      definitionText: localResult?.final?.definitionText,
-      accessText: localResult?.final?.accessText,
-      relationText: localResult?.final?.relationText,
-      coreHours: localResult?.final?.coreHours,
-      accessHours: localResult?.final?.accessHours,
-    }, null, 2),
-  ].join('\n');
-}
-
-async function callOpenAI(prompt) {
+async function callOpenAI(userText) {
   const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-  const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+  const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
+
+  if (!apiKey) {
+    return {
+      mode: "fallback",
+      answer:
+        "Няма зададен OPENAI_API_KEY в Render. Добави ключа в Environment Variables, за да работи истинският AI.",
+      checks: [
+        "Провери дали OPENAI_API_KEY е добавен",
+        "Провери дали OPENAI_MODEL е gpt-4.1-mini",
+        "Направи redeploy след промяната"
+      ]
+    };
+  }
+
+  const prompt = `
+You are an aircraft maintenance SAC planning copilot.
+Be practical, concise, and useful.
+The user will give task-card text or maintenance text.
+Return JSON only in this format:
+{
+  "answer": "string",
+  "checks": ["string", "string", "string"]
+}
+
+User text:
+${userText}
+`;
+
   const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
     },
     body: JSON.stringify({
       model,
       temperature: 0.2,
-      response_format: { type: 'json_object' },
+      response_format: { type: "json_object" },
       messages: [
-        { role: 'system', content: 'You return grounded JSON only.' },
-        { role: 'user', content: prompt },
-      ],
-    }),
+        { role: "system", content: "You are a grounded aviation maintenance planning assistant. Return JSON only." },
+        { role: "user", content: prompt }
+      ]
+    })
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Model request failed: ${response.status} ${text}`);
+    const txt = await response.text();
+    throw new Error(`OpenAI error: ${response.status} ${txt}`);
   }
+
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error('Model returned no content.');
+
+  if (!content) {
+    throw new Error("No model response content");
+  }
+
   return JSON.parse(content);
 }
 
-const server = http.createServer(async (req, res) => {
-  const parsed = url.parse(req.url, true);
-  const pathname = parsed.pathname || '/';
+const html = `<!DOCTYPE html>
+<html lang="bg">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SAC Finder AI</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f4f7fb;
+      color: #102040;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .hero {
+      background: linear-gradient(135deg, #06184d, #0f3b8a);
+      color: white;
+      border-radius: 18px;
+      padding: 28px;
+      margin-bottom: 20px;
+    }
+    .hero h1 {
+      margin: 0 0 10px;
+      font-size: 36px;
+    }
+    .hero h1 span {
+      color: #f7b500;
+    }
+    .card {
+      background: white;
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 220px;
+      padding: 14px;
+      font-size: 15px;
+      border-radius: 12px;
+      border: 1px solid #ccd6e5;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    button {
+      border: none;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .primary {
+      background: #06184d;
+      color: white;
+    }
+    .gold {
+      background: #f7b500;
+      color: #221700;
+    }
+    .muted {
+      background: #e9eef7;
+      color: #102040;
+    }
+    .out {
+      white-space: pre-wrap;
+      line-height: 1.6;
+      background: #f8fbff;
+      border: 1px solid #d9e3f0;
+      border-radius: 12px;
+      padding: 14px;
+      min-height: 120px;
+    }
+    ul {
+      margin-top: 8px;
+      line-height: 1.7;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>SAC Finder <span>AI</span></h1>
+      <p>Работещ сайт с AI агент за task-card / maintenance text анализ.</p>
+    </div>
 
-  if (req.method === 'GET' && pathname === '/api/health') {
-    return sendJson(res, 200, { ok: true, model: process.env.OPENAI_MODEL || null, hasKey: Boolean(process.env.OPENAI_API_KEY) });
-  }
+    <div class="card">
+      <h2>Входен текст</h2>
+      <textarea id="taskText" placeholder="Постави task card text, maintenance description или planning comment..."></textarea>
+      <div class="row">
+        <button class="primary" onclick="runAI()">Run AI</button>
+        <button class="muted" onclick="clearAll()">Clear</button>
+      </div>
+    </div>
 
-  if (req.method === 'POST' && pathname === '/api/agent') {
-    try {
-      const body = await readBody(req);
-      const taskText = String(body?.taskText || '').trim();
-      if (!taskText) return sendJson(res, 400, { error: 'taskText is required.' });
-      const localResult = body?.localResult || engine.analyzeText(DB, taskText);
+    <div class="card">
+      <h2>AI отговор</h2>
+      <div id="answer" class="out">Тук ще излезе отговорът.</div>
+    </div>
 
-      if (!process.env.OPENAI_API_KEY) {
-        return sendJson(res, 200, buildFallback(localResult, taskText));
+    <div class="card">
+      <h2>Checks</h2>
+      <ul id="checks">
+        <li>Още няма резултат.</li>
+      </ul>
+    </div>
+  </div>
+
+  <script>
+    async function runAI() {
+      const text = document.getElementById("taskText").value.trim();
+      if (!text) {
+        alert("Постави текст първо.");
+        return;
       }
 
-      const prompt = buildPrompt(taskText, localResult);
-      const ai = await callOpenAI(prompt);
-      const safe = {
-        mode: 'live_ai',
-        recommendation: typeof ai.recommendation === 'string' ? ai.recommendation : 'No recommendation returned.',
-        why: Array.isArray(ai.why) ? ai.why.slice(0, 8) : [],
-        checks: Array.isArray(ai.checks) ? ai.checks.slice(0, 8) : [],
-        codes: Array.isArray(ai.codes) ? ai.codes.slice(0, 8) : [],
-        trace: Array.isArray(ai.trace) ? ai.trace.slice(0, 12) : ['AI completed reasoning.'],
-      };
-      return sendJson(res, 200, safe);
-    } catch (error) {
-      console.error(error);
-      return sendJson(res, 500, { error: error.message || 'Unknown server error' });
+      document.getElementById("answer").textContent = "Мисля...";
+      document.getElementById("checks").innerHTML = "<li>Изчакване...</li>";
+
+      try {
+        const res = await fetch("/api/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || "AI request failed");
+        }
+
+        document.getElementById("answer").textContent = data.answer || "Няма върнат отговор.";
+        const checks = Array.isArray(data.checks) ? data.checks : [];
+        document.getElementById("checks").innerHTML =
+          checks.length ? checks.map(x => "<li>" + x + "</li>").join("") : "<li>Няма checks.</li>";
+      } catch (e) {
+        document.getElementById("answer").textContent = "Грешка: " + e.message;
+        document.getElementById("checks").innerHTML = "<li>Провери Render logs</li>";
+      }
+    }
+
+    function clearAll() {
+      document.getElementById("taskText").value = "";
+      document.getElementById("answer").textContent = "Тук ще излезе отговорът.";
+      document.getElementById("checks").innerHTML = "<li>Още няма резултат.</li>";
+    }
+  </script>
+</body>
+</html>`;
+
+const server = http.createServer(async (req, res) => {
+  if (req.method === "GET" && req.url === "/") {
+    return send(res, 200, html);
+  }
+
+  if (req.method === "GET" && req.url === "/api/health") {
+    return send(
+      res,
+      200,
+      JSON.stringify({
+        ok: true,
+        hasKey: Boolean(process.env.OPENAI_API_KEY),
+        model: process.env.OPENAI_MODEL || "gpt-4.1-mini"
+      }),
+      "application/json; charset=utf-8"
+    );
+  }
+
+  if (req.method === "POST" && req.url === "/api/agent") {
+    try {
+      const body = await readBody(req);
+      const text = String(body.text || "").trim();
+
+      if (!text) {
+        return send(
+          res,
+          400,
+          JSON.stringify({ error: "Missing text" }),
+          "application/json; charset=utf-8"
+        );
+      }
+
+      const result = await callOpenAI(text);
+
+      return send(
+        res,
+        200,
+        JSON.stringify({
+          answer: result.answer || "Няма отговор.",
+          checks: Array.isArray(result.checks) ? result.checks : []
+        }),
+        "application/json; charset=utf-8"
+      );
+    } catch (e) {
+      return send(
+        res,
+        500,
+        JSON.stringify({ error: e.message || "Server error" }),
+        "application/json; charset=utf-8"
+      );
     }
   }
 
-  const safePath = pathname === '/' ? '/index.html' : pathname;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, safePath));
-  if (filePath.startsWith(PUBLIC_DIR) && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-    return sendFile(res, filePath);
-  }
-
-  return sendFile(res, path.join(PUBLIC_DIR, 'index.html'));
+  return send(res, 404, "Not found", "text/plain; charset=utf-8");
 });
 
 server.listen(PORT, () => {
-  console.log(`SAC Finder AI Copilot is running on http://localhost:${PORT}`);
+  console.log("Server running on port " + PORT);
 });
