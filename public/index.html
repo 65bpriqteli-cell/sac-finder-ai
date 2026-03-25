@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SAC Finder AI</title>
+<style>
+  :root{
+    --lh-blue:#05164d;
+    --lh-blue-2:#0b215f;
+    --lh-gold:#f7b500;
+    --text:#102245;
+    --muted:#5a6a88;
+    --line:#d8e2f0;
+    --shadow:0 18px 48px rgba(7,28,72,.12);
+    --card:rgba(255,255,255,.84);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    color:var(--text);
+    background:
+      radial-gradient(circle at 10% 10%, rgba(255,255,255,.9), rgba(255,255,255,0) 24%),
+      radial-gradient(circle at 90% 20%, rgba(255,255,255,.55), rgba(255,255,255,0) 20%),
+      linear-gradient(180deg, #f7fbff 0%, #edf5fc 42%, #e7f1fb 100%);
+    overflow-x:hidden;
+  }
+  body::before{
+    content:"";
+    position:fixed; inset:0;
+    background:
+      repeating-linear-gradient(120deg, rgba(11,33,95,.025) 0 2px, transparent 2px 70px),
+      linear-gradient(transparent 0 70%, rgba(5,22,77,.03) 100%);
+    pointer-events:none;
+  }
+  .flight-path{
+    position:fixed; inset:auto auto 8% -8%;
+    width:120%; height:180px;
+    border-top:2px dashed rgba(11,33,95,.08);
+    border-radius:50%;
+    transform:rotate(-6deg);
+    pointer-events:none;
+  }
+  .flight-path::after{
+    content:"";
+    position:absolute; right:10%; top:-8px;
+    width:14px; height:14px; border-radius:50%;
+    background:var(--lh-gold); box-shadow:0 0 0 10px rgba(247,181,0,.08);
+    animation:beacon 3.2s ease-in-out infinite;
+  }
+  @keyframes beacon{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.45);opacity:.45}}
+  @keyframes floatPlane{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+  @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+  .app{position:relative;max-width:1380px;margin:0 auto;padding:22px 20px 42px}
+  .topbar{
+    position:sticky; top:0; z-index:30; margin:10px 0 18px;
+    backdrop-filter:blur(14px);
+    background:rgba(255,255,255,.74);
+    border:1px solid rgba(216,226,240,.8);
+    box-shadow:var(--shadow); border-radius:26px;
+    display:flex; align-items:center; justify-content:space-between; gap:18px;
+    padding:14px 18px;
+  }
+  .brand{display:flex;align-items:center;gap:14px}
+  .brand-logo{
+    width:54px;height:54px;border-radius:50%;
+    display:grid;place-items:center;
+    background:#fff;box-shadow:0 12px 28px rgba(5,22,77,.18);
+    border:2px solid rgba(5,22,77,.1); font-size:24px;
+    animation:floatPlane 3.2s ease-in-out infinite;
+  }
+  .brand-copy h1{margin:0;font-size:18px;line-height:1.1;font-weight:900;letter-spacing:.02em}
+  .brand-copy p{margin:4px 0 0;color:var(--muted);font-size:12px;font-weight:600}
+  .hero-card,.panel{
+    background:var(--card);
+    border:1px solid rgba(216,226,240,.9);
+    border-radius:30px;
+    box-shadow:var(--shadow);
+  }
+  .hero-card{
+    position:relative; overflow:hidden; padding:26px;
+    background:
+      linear-gradient(145deg, rgba(5,22,77,.98), rgba(9,37,105,.92) 52%, rgba(18,76,166,.85)),
+      radial-gradient(circle at 85% 12%, rgba(255,255,255,.12), rgba(255,255,255,0) 22%);
+    color:#fff; margin-bottom:18px;
+  }
+  .hero-card::before{
+    content:""; position:absolute; right:-120px; top:-120px; width:340px; height:340px;
+    border-radius:50%; border:1px solid rgba(255,255,255,.12);
+    box-shadow:0 0 0 40px rgba(255,255,255,.03), 0 0 0 90px rgba(255,255,255,.02);
+  }
+  .eyebrow{display:inline-flex;align-items:center;gap:10px;padding:9px 14px;border-radius:999px;background:rgba(255,255,255,.1);font-size:12px;font-weight:900;letter-spacing:.1em;text-transform:uppercase}
+  .hero-title{margin:12px 0 10px;font-weight:1000;font-size:clamp(34px,4vw,58px);line-height:.98;letter-spacing:-.04em;max-width:840px}
+  .hero-sub{margin:0;max-width:760px;color:rgba(255,255,255,.88);font-size:15px;line-height:1.75}
+  .hero-stickers{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .sticker{padding:10px 14px;border-radius:999px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.15);font-size:13px;font-weight:800}
+  .main-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(360px,.85fr);gap:18px}
+  .panel{padding:22px}
+  .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
+  .section-head h2{margin:0 0 6px;font-size:22px}
+  .section-head p{margin:0;color:var(--muted);line-height:1.6}
+  .field-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .field.taskcard{grid-column:1/-1}
+  .field label{display:block;margin-bottom:8px;font-size:12px;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .textarea,.input,.select{
+    width:100%; border-radius:18px; border:1px solid var(--line);
+    background:rgba(248,251,255,.85); padding:15px 16px; font:inherit; color:var(--text);
+    outline:none; transition:.15s ease; box-shadow: inset 0 1px 0 rgba(255,255,255,.5);
+  }
+  .textarea{min-height:132px; resize:vertical}
+  .textarea:focus,.input:focus,.select:focus{border-color:#98b5ea;box-shadow:0 0 0 4px rgba(61,115,214,.08)}
+  .upload-box,.subtle-box{
+    border-radius:20px; border:1px solid var(--line); background:rgba(248,251,255,.88); padding:16px;
+  }
+  .upload-box{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+  .btn-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}
+  .btn{
+    border:none; cursor:pointer; padding:13px 18px; border-radius:16px; font:inherit; font-weight:900;
+    display:inline-flex; align-items:center; gap:8px; transition:.18s ease;
+  }
+  .btn:hover{transform:translateY(-1px)}
+  .btn-primary{background:linear-gradient(180deg,var(--lh-blue),#0c2770);color:#fff;box-shadow:0 14px 30px rgba(5,22,77,.18)}
+  .btn-secondary{background:#eaf1fb;color:var(--text)}
+  .mini-plane{display:inline-block;animation:floatPlane 2.8s ease-in-out infinite}
+  .status-box{padding:14px 16px;border-radius:16px;font-size:14px;line-height:1.6}
+  .status-warn{background:#fff6df;border:1px solid #f2da8b;color:#745900}
+  .status-ok{background:#eefbf2;border:1px solid #b8e1c4;color:#145b2d}
+  .tabbar{display:flex;gap:10px;flex-wrap:wrap}
+  .tab{border:none;background:#eef4fd;color:var(--text);padding:10px 14px;border-radius:999px;font:inherit;font-weight:800;cursor:pointer}
+  .tab.active{background:linear-gradient(180deg,var(--lh-blue),#0c2770);color:#fff}
+  .tab-panel{margin-top:14px}
+  .op-list,.backup-list,.record-grid,.agent-panel{display:grid;gap:12px}
+  .op-item,.candidate-item,.case-item,.agent-step,.result-card{
+    border-radius:22px;border:1px solid var(--line);background:#fff;padding:16px 16px;
+  }
+  .op-top,.candidate-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+  .pill,.confidence-high,.confidence-medium,.confidence-low{
+    display:inline-flex;align-items:center;justify-content:center;padding:0 12px;min-height:34px;border-radius:999px;font-size:13px;font-weight:900
+  }
+  .pill{background:#edf2fb;color:#284073}
+  .confidence-high{background:#eaf9ef;color:#146235}
+  .confidence-medium{background:#fff5dd;color:#7a5c00}
+  .confidence-low{background:#fff0f0;color:#8d3030}
+  .agent-step.active{background:linear-gradient(180deg,#eef7ff,#e6f1ff);border-color:#9dc1ff;box-shadow:0 10px 24px rgba(61,115,214,.12)}
+  .agent-step.done{background:linear-gradient(180deg,#f3fff7,#edfef4);border-color:#b6e3c2}
+  .agent-flex{display:flex;align-items:flex-start;gap:12px}
+  .dot{width:12px;height:12px;border-radius:50%;margin-top:5px;background:#cad7ef}
+  .agent-step.active .dot,.agent-step.done .dot{background:var(--lh-gold)}
+  .agent-log{
+    border-radius:20px; border:1px dashed rgba(11,33,95,.15); background:rgba(248,251,255,.88); padding:14px; color:var(--muted); line-height:1.7;
+    margin-top:14px
+  }
+  .big{font-size:34px;line-height:1.05;letter-spacing:-.04em}
+  .kv-grid,.metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .kv,.metric{border-radius:18px;border:1px solid var(--line);background:rgba(248,251,255,.88);padding:14px}
+  .metric .v{font-size:28px;font-weight:1000;letter-spacing:-.03em;margin-top:6px}
+  .toggle{display:flex;align-items:center;justify-content:space-between;gap:14px}
+  .switch{width:58px;height:34px;border-radius:999px;background:#dce6f6;position:relative;cursor:pointer;transition:.18s ease}
+  .switch::after{content:"";position:absolute;top:4px;left:4px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 8px 18px rgba(5,22,77,.18);transition:.18s ease}
+  .switch.on{background:linear-gradient(180deg,var(--lh-blue),#0c2770)}
+  .switch.on::after{left:28px}
+  .bar{height:10px;border-radius:999px;background:#e4ebf6;overflow:hidden;margin-top:10px}
+  .bar span{display:block;height:100%;background:linear-gradient(90deg,var(--lh-blue),var(--lh-gold));background-size:200% 100%;animation:shimmer 2.6s linear infinite}
+  .small-muted{color:var(--muted);font-size:13px;line-height:1.7}
+  @media (max-width:1100px){.main-grid{grid-template-columns:1fr}.field-grid,.kv-grid,.metric-grid{grid-template-columns:1fr}}
+  @media (max-width:760px){.app{padding:14px}.topbar,.hero-card,.panel{border-radius:24px}.hero-title{font-size:34px}}
+</style>
+</head>
+<body>
+<div class="flight-path"></div>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo">✈</div>
+      <div class="brand-copy">
+        <h1>SAC Finder AI</h1>
+        <p>English workflow • Lufthansa-style aviation interface • Live AI</p>
+      </div>
+    </div>
+    <div class="pill" id="healthPill">Checking API…</div>
+  </header>
+
+  <section class="hero-card">
+    <div class="eyebrow">SAC Finder • AI Copilot</div>
+    <h1 class="hero-title">Find SAC codes with <span style="color:var(--lh-gold)">flexible reasoning</span>, the same premium look, and a real live AI connection.</h1>
+    <p class="hero-sub">This version keeps the airline-style visual design, animated workflow, and task-card-first layout, while adding a real AI layer on top. The local screen logic helps split task wording into operations, and the live AI copilot returns an English recommendation, checks, and suggested SAC bundle candidates.</p>
+    <div class="hero-stickers">
+      <div class="sticker">✈ Task Card First</div>
+      <div class="sticker">🧠 Live AI Copilot</div>
+      <div class="sticker">🛠 Core vs Access Split</div>
+      <div class="sticker">📄 PDF / TXT Reader</div>
+    </div>
+  </section>
+
+  <section class="main-grid">
+    <div class="panel">
+      <div class="section-head">
+        <div>
+          <h2>Find Your SAC</h2>
+          <p>Description and planning are optional. The task card or extracted PDF text can be enough by itself.</p>
+        </div>
+      </div>
+
+      <div class="field-grid">
+        <div class="field">
+          <label>Description</label>
+          <textarea id="description" class="textarea" placeholder="Optional description..."></textarea>
+        </div>
+        <div class="field">
+          <label>Planning Comment</label>
+          <textarea id="planning" class="textarea" placeholder="Optional planning comment..."></textarea>
+        </div>
+        <div class="field taskcard">
+          <label>Task Card Description</label>
+          <textarea id="taskCard" class="textarea" placeholder="Paste the full task card here. This is the most important input."></textarea>
+        </div>
+        <div class="field">
+          <label>PDF / TXT Reader</label>
+          <div class="upload-box">
+            <div>
+              <div style="font-weight:900;">Read a text PDF or TXT file</div>
+              <small>If a text-based PDF is loaded, the extracted text can be used even when the other fields are empty.</small>
+            </div>
+            <input id="fileInput" type="file" accept=".pdf,.txt,.log,.md" />
+          </div>
+          <div id="fileStatus" class="subtle-box" style="margin-top:10px;">No file loaded yet.</div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="analyzeBtn">Analyze Task Card <span class="mini-plane">✈</span></button>
+        <button class="btn btn-secondary" id="clearBtn">Clear <span class="mini-plane">✈</span></button>
+      </div>
+
+      <div id="warnBox" class="status-box status-warn" style="display:none;margin-top:12px;"></div>
+      <div id="okBox" class="status-box status-ok" style="display:none;margin-top:12px;"></div>
+
+      <div class="subtle-box" style="margin-top:14px;">
+        <div style="font-weight:900;color:var(--text);margin-bottom:6px;">Combined source preview</div>
+        <div id="combinedPreview">No input yet.</div>
+      </div>
+
+      <div class="tabbar" style="margin-top:18px;">
+        <button class="tab active" data-tab="ops">Detected Operations</button>
+        <button class="tab" data-tab="candidates">Top Candidates</button>
+        <button class="tab" data-tab="evidence">Evidence Trace</button>
+        <button class="tab" data-tab="cases">Saved Cases</button>
+      </div>
+
+      <div id="tab-ops" class="tab-panel">
+        <div class="op-list" id="operationsList"><div class="subtle-box">Run the finder to see the detected task-card operations.</div></div>
+      </div>
+      <div id="tab-candidates" class="tab-panel" style="display:none;">
+        <div class="backup-list" id="candidateList"><div class="subtle-box">Run the finder to see AI-backed candidate suggestions.</div></div>
+      </div>
+      <div id="tab-evidence" class="tab-panel" style="display:none;">
+        <div class="backup-list" id="evidenceList"><div class="subtle-box">Run the finder to see the reasoning trace.</div></div>
+      </div>
+      <div id="tab-cases" class="tab-panel" style="display:none;">
+        <div class="record-grid" id="casesGrid"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="section-head">
+        <div>
+          <h2>AI Agent Chain</h2>
+          <p>Flexible reasoning over the live task-card context</p>
+        </div>
+      </div>
+
+      <div class="agent-panel" id="agentPanel"></div>
+      <div class="agent-log" id="agentLog">No agent activity yet.</div>
+
+      <div class="subtle-box" id="liveAiBox" style="margin-top:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#557099;font-weight:900;">Live AI Copilot</div>
+            <div style="font-size:13px;color:var(--muted);margin-top:4px;">English reasoning layer with quota-safe messaging.</div>
+          </div>
+          <div id="liveAiPill" class="pill">Ready</div>
+        </div>
+        <div id="liveAiRecommendation" style="margin-top:12px;font-weight:800;line-height:1.7;">Run “Analyze Task Card” to get the local result and the live AI recommendation together.</div>
+        <div id="liveAiChecks" style="margin-top:10px;color:var(--muted);line-height:1.7;"></div>
+      </div>
+
+      <div class="result-card" style="margin-top:18px;">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+          <div>
+            <div style="font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#557099;font-weight:900;">Primary SAC recommendation</div>
+            <strong class="big" id="bestSac">—</strong>
+          </div>
+          <div id="bestPill" class="pill">Waiting</div>
+        </div>
+
+        <div class="kv-grid" style="margin-top:14px;">
+          <div class="kv"><strong>Best source:</strong> <span id="bestSource">—</span></div>
+          <div class="kv"><strong>Matched wording:</strong> <span id="bestMatchText">—</span></div>
+          <div class="kv"><strong>AI recommendation:</strong> <span id="definitionText">—</span></div>
+          <div class="kv"><strong>Access decision:</strong> <span id="accessText">—</span></div>
+          <div class="kv"><strong>Bundle relation:</strong> <span id="sacdbText">—</span></div>
+        </div>
+
+        <div class="toggle" style="margin-top:14px;">
+          <div>
+            <div style="font-weight:900;">Show hour estimate</div>
+            <div style="font-size:12px;color:var(--muted);">Hours stay separate from the core SAC decision.</div>
+          </div>
+          <div id="hourSwitch" class="switch"></div>
+        </div>
+
+        <div id="hourMetrics" class="metric-grid" style="display:none;margin-top:12px;">
+          <div class="metric"><div style="font-size:12px;color:var(--muted);font-weight:800;text-transform:uppercase;">Core hours</div><div class="v" id="coreHours">—</div></div>
+          <div class="metric"><div style="font-size:12px;color:var(--muted);font-weight:800;text-transform:uppercase;">Access hours</div><div class="v" id="accessHours">—</div></div>
+        </div>
+
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-primary" id="confirmBtn">Confirm Result <span class="mini-plane">✈</span></button>
+          <button class="btn btn-secondary" id="saveBtn">Save to History <span class="mini-plane">✈</span></button>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+let extractedFileText = "";
+let currentResult = null;
+let showHours = false;
+let confirmedCases = JSON.parse(localStorage.getItem("sacFinderConfirmedCases_v2") || "[]");
+if (!confirmedCases.length) confirmedCases = [];
+
+const OP_PATTERNS = [
+  {name:"remove", keys:[" remove "," rmvl ","-rmvl","remove","removal","detach","strip out"]},
+  {name:"install", keys:[" install "," inst ","-inst","install","installation","fit","reinstall"]},
+  {name:"inspect", keys:[" inspect ","inspection","check","gvi","dvi","examine","test","verify"]},
+  {name:"repair", keys:[" repair ","rework","restore","blend","rectify"]},
+  {name:"replace", keys:[" replace ","repl","renew","change"]},
+];
+
+function normalizeText(text){
+  return (text || "").toLowerCase().replace(/[\u2010-\u2015]/g, "-").replace(/[^a-z0-9\s/_-]/g, " ").replace(/\s+/g, " ").trim();
+}
+function tokenize(text){
+  const stop = new Set(["the","and","for","with","from","into","that","this","are","was","will","have","has","had","your","task","card","description","planning","comment","full","area","side","fin","via","after","before","around","system"]);
+  return [...new Set(normalizeText(text).split(" ").filter(w => w && w.length > 1 && !stop.has(w)))];
+}
+function detectOperation(text){
+  const norm = ` ${normalizeText(text)} `;
+  for (const op of OP_PATTERNS) {
+    if (op.keys.some(k => norm.includes(k))) return op.name;
+  }
+  return "analyze";
+}
+function detectAccessLike(text){
+  const norm = normalizeText(text);
+  return ["panel","access panel","cover","hatch","fairing","door panel","trim","lining","liner","open panel","gain access","access door","sidewall","ceiling panel","floor panel","cover panel","remove lining","open trim"].some(h => norm.includes(h));
+}
+function splitTaskCard(text){
+  return (text || "").split(/\n+|[.;]+/g).map(s => s.trim()).filter(Boolean).filter(s => s.length > 5);
+}
+function confidenceLabel(score){
+  if (score >= 80) return "High";
+  if (score >= 55) return "Medium";
+  return "Low";
+}
+function confidenceClass(score){
+  if (score >= 80) return "confidence-high";
+  if (score >= 55) return "confidence-medium";
+  return "confidence-low";
+}
+function updateCombinedPreview(){
+  const text = [
+    document.getElementById("description").value.trim(),
+    document.getElementById("planning").value.trim(),
+    document.getElementById("taskCard").value.trim(),
+    extractedFileText.trim()
+  ].filter(Boolean).join("\n");
+  document.getElementById("combinedPreview").textContent = text || "No input yet.";
+  return text;
+}
+function setMessage(type, text){
+  const warn = document.getElementById("warnBox");
+  const ok = document.getElementById("okBox");
+  warn.style.display = "none";
+  ok.style.display = "none";
+  if (!type || !text) return;
+  if (type === "warn") {
+    warn.style.display = "block";
+    warn.textContent = text;
+  } else {
+    ok.style.display = "block";
+    ok.textContent = text;
+  }
+}
+function setAgentState(stepIndex, logs){
+  const panel = document.getElementById("agentPanel");
+  const steps = [
+    ["Task Card Reader Agent","Reads the task card or extracted PDF text first and splits it into operation lines."],
+    ["Operation Parser Agent","Detects remove / install / inspect / repair / replace operations and component wording."],
+    ["Core vs Access Agent","Separates likely core work from likely access removals."],
+    ["AI Retrieval Agent","Builds the request that will be sent to the live AI endpoint."],
+    ["Live Reasoning Agent","Requests the recommendation, checks, and candidate bundle in English."],
+    ["Result Formatter Agent","Updates the final SAC recommendation and the candidate view."]
+  ];
+  panel.innerHTML = steps.map((s,idx)=>{
+    const state = idx < stepIndex ? "done" : idx === stepIndex ? "active" : "";
+    return `<div class="agent-step ${state}"><div class="agent-flex"><div class="dot"></div><div><div style="font-weight:900;">${s[0]}</div><div style="font-size:13px;color:var(--muted);margin-top:3px;">${s[1]}</div></div></div></div>`;
+  }).join("");
+  document.getElementById("agentLog").innerHTML = logs.length ? logs.map(l=>`• ${l}`).join("<br>") : "No agent activity yet.";
+}
+function renderCases(){
+  const grid = document.getElementById("casesGrid");
+  if (!confirmedCases.length) {
+    grid.innerHTML = '<div class="subtle-box">No saved cases yet.</div>';
+    return;
+  }
+  grid.innerHTML = confirmedCases.map(c => `
+    <div class="case-item">
+      <strong>${c.code || '—'}</strong>
+      <div class="small-muted" style="margin-top:8px;">${c.text || ''}</div>
+      <div style="margin-top:8px;font-weight:800;color:var(--text)">${c.ai || ''}</div>
+    </div>`).join("");
+}
+function renderLocalSegments(segments){
+  document.getElementById("operationsList").innerHTML = segments.length ? segments.map(seg => {
+    const score = seg.score;
+    return `<div class="op-item">
+      <div class="op-top">
+        <div>
+          <strong>${seg.op.toUpperCase()}</strong>
+          <div class="small-muted" style="margin-top:8px;">${seg.segment}</div>
+        </div>
+        <div class="${confidenceClass(score)}">${confidenceLabel(score)}</div>
+      </div>
+      <div class="small-muted" style="margin-top:12px;"><strong>Detected type:</strong> ${seg.type === 'access' ? 'Access-like' : 'Core-like'}<br><strong>Keywords:</strong> ${seg.tokens.slice(0,8).join(", ") || "—"}</div>
+    </div>`;
+  }).join("") : '<div class="subtle-box">No operations detected yet.</div>';
+}
+function renderCandidates(codes){
+  const list = document.getElementById("candidateList");
+  if (!Array.isArray(codes) || !codes.length) {
+    list.innerHTML = '<div class="subtle-box">No AI candidates returned yet.</div>';
+    return;
+  }
+  list.innerHTML = codes.map((item, index) => `
+    <div class="candidate-item">
+      <div class="candidate-top">
+        <div>
+          <div style="font-size:18px;font-weight:1000;">${item.code || "—"}</div>
+          <div class="small-muted">${item.role || "candidate"}</div>
+        </div>
+        <div class="${index === 0 ? 'confidence-high' : 'pill'}">${index === 0 ? 'Primary' : 'Alt'}</div>
+      </div>
+      <div class="bar"><span style="width:${index === 0 ? 88 : Math.max(52, 80 - index*10)}%"></span></div>
+      <div class="small-muted" style="margin-top:10px;">${item.note || "No note returned."}</div>
+    </div>`).join("");
+}
+function renderEvidence(logs){
+  document.getElementById("evidenceList").innerHTML = logs.length ? logs.map((l,i) => `<div class="subtle-box"><strong>Step ${i+1}</strong><div class="small-muted" style="margin-top:6px;">${l}</div></div>`).join("") : '<div class="subtle-box">No evidence trace yet.</div>';
+}
+function applyResult(result, taskText, segments){
+  const bestCode = result?.codes?.[0]?.code || "—";
+  document.getElementById("bestSac").textContent = bestCode;
+  const pill = document.getElementById("bestPill");
+  pill.className = result?.mode === "live_ai" ? "confidence-high" : "confidence-medium";
+  pill.textContent = result?.mode === "live_ai" ? "Live AI" : "Fallback";
+  document.getElementById("bestSource").textContent = result?.mode === "live_ai" ? "OpenAI + on-page task parser" : "Built-in fallback";
+  document.getElementById("bestMatchText").textContent = segments[0]?.segment || taskText.slice(0, 140) || "—";
+  document.getElementById("definitionText").textContent = result?.recommendation || "—";
+  document.getElementById("accessText").textContent = segments.some(s => s.type === "access") ? "Access-like wording detected in the task card." : "No strong access-only wording detected.";
+  document.getElementById("sacdbText").textContent = Array.isArray(result?.codes) && result.codes.length ? result.codes.map(c => c.code).join(" • ") : "No bundle returned.";
+  document.getElementById("coreHours").textContent = Math.max(1, Math.min(18, (segments.filter(s => s.type !== "access").length * 2.2).toFixed(1))) + " MH";
+  document.getElementById("accessHours").textContent = (segments.filter(s => s.type === "access").length * 0.7).toFixed(1) + " MH";
+
+  const livePill = document.getElementById("liveAiPill");
+  livePill.className = result?.mode === "live_ai" ? "confidence-high" : "confidence-medium";
+  livePill.textContent = result?.mode === "live_ai" ? "Live AI" : "Fallback";
+  document.getElementById("liveAiRecommendation").textContent = result?.recommendation || "No recommendation returned.";
+  document.getElementById("liveAiChecks").innerHTML = (Array.isArray(result?.checks) ? result.checks.map(x => "• " + x).join("<br>") : "");
+  renderCandidates(result?.codes || []);
+}
+async function analyze(){
+  const taskText = document.getElementById("taskCard").value.trim() || extractedFileText.trim() || document.getElementById("description").value.trim() || document.getElementById("planning").value.trim();
+  if (!taskText) {
+    setMessage("warn", "Please paste a task card or load a text PDF/TXT file first.");
+    return;
+  }
+  setMessage(null, "");
+  const logs = [];
+  setAgentState(0, logs);
+  await new Promise(r=>setTimeout(r,180));
+  const segments = splitTaskCard(taskText).map((seg, i) => {
+    const op = detectOperation(seg);
+    const access = detectAccessLike(seg);
+    const tokens = tokenize(seg);
+    const score = Math.min(95, 45 + tokens.length * 4 + (access ? -8 : 8));
+    return { segment: seg, op, type: access ? "access" : "core", tokens, score };
+  });
+  logs.push(`Read ${segments.length} operation line(s) from the task card source.`);
+  renderLocalSegments(segments);
+  renderEvidence(logs);
+  setAgentState(1, logs);
+  await new Promise(r=>setTimeout(r,160));
+  logs.push("Detected operations and split likely core actions from likely access removals.");
+  renderEvidence(logs);
+  setAgentState(2, logs);
+  await new Promise(r=>setTimeout(r,160));
+  logs.push("Prepared the live AI request using the combined task-card wording.");
+  renderEvidence(logs);
+  setAgentState(3, logs);
+
+  currentResult = {
+    final: {
+      ranked: segments.slice(0,3).map((s,i)=>({code:`TEMP-${i+1}`,score:s.score,definition:s.segment,pieces:[{segment:s.segment}]}))
+    }
+  };
+
+  try {
+    await new Promise(r=>setTimeout(r,160));
+    logs.push("Sent the task card to the live AI copilot.");
+    renderEvidence(logs);
+    setAgentState(4, logs);
+
+    const response = await fetch("/api/agent", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ taskText, localResult: currentResult })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "AI request failed");
+
+    logs.push(data.mode === "live_ai" ? "Received the live AI recommendation and checks." : "Live AI used the local fallback recommendation.");
+    renderEvidence(logs);
+    setAgentState(5, logs);
+    applyResult(data, taskText, segments);
+    setMessage("ok", data.mode === "live_ai" ? "Live AI recommendation completed successfully." : "Fallback recommendation completed because the AI key/quota was not available.");
+  } catch (error) {
+    logs.push("The AI request failed and returned an error message.");
+    renderEvidence(logs);
+    setAgentState(5, logs);
+    const fallback = {
+      mode:"fallback",
+      recommendation:error.message || "AI request failed.",
+      checks:["Check the OpenAI key in Render.","Check quota / billing if you received a 429 or insufficient_quota.","Try the request again after redeploy if you changed settings."],
+      codes:[]
+    };
+    applyResult(fallback, taskText, segments);
+    setMessage("warn", fallback.recommendation);
+  }
+}
+async function extractPdfText(file){
+  const pdfjsLib = window['pdfjs-dist/build/pdf'];
+  if (pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const data = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjsLib.getDocument({ data }).promise;
+  const pages = [];
+  for (let i=1;i<=pdf.numPages;i++){
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    pages.push(content.items.map(item=>item.str).join(" "));
+  }
+  return pages.join("\n");
+}
+async function checkHealth(){
+  try{
+    const res = await fetch("/api/health");
+    const data = await res.json();
+    const pill = document.getElementById("healthPill");
+    pill.className = data.hasKey ? "confidence-high" : "confidence-medium";
+    pill.textContent = data.hasKey ? `AI Ready • ${data.model}` : "AI Key Missing";
+  }catch{
+    document.getElementById("healthPill").textContent = "Health Check Failed";
+  }
+}
+document.getElementById("analyzeBtn").addEventListener("click", analyze);
+document.getElementById("clearBtn").addEventListener("click", () => {
+  document.getElementById("description").value = "";
+  document.getElementById("planning").value = "";
+  document.getElementById("taskCard").value = "";
+  document.getElementById("fileInput").value = "";
+  extractedFileText = ""; currentResult = null; updateCombinedPreview();
+  document.getElementById("fileStatus").textContent = "No file loaded yet.";
+  setMessage(null, "");
+  setAgentState(-1, []);
+  document.getElementById("bestSac").textContent = "—";
+  document.getElementById("bestPill").textContent = "Waiting";
+  document.getElementById("bestPill").className = "pill";
+  document.getElementById("bestSource").textContent = "—";
+  document.getElementById("bestMatchText").textContent = "—";
+  document.getElementById("definitionText").textContent = "—";
+  document.getElementById("accessText").textContent = "—";
+  document.getElementById("sacdbText").textContent = "—";
+  document.getElementById("candidateList").innerHTML = '<div class="subtle-box">Run the finder to see AI-backed candidate suggestions.</div>';
+  document.getElementById("operationsList").innerHTML = '<div class="subtle-box">Run the finder to see the detected task-card operations.</div>';
+  document.getElementById("evidenceList").innerHTML = '<div class="subtle-box">Run the finder to see the reasoning trace.</div>';
+  document.getElementById("liveAiRecommendation").textContent = 'Run “Analyze Task Card” to get the local result and the live AI recommendation together.';
+  document.getElementById("liveAiChecks").innerHTML = "";
+});
+document.getElementById("confirmBtn").addEventListener("click", () => addConfirmed("confirmed"));
+document.getElementById("saveBtn").addEventListener("click", () => addConfirmed("saved"));
+document.getElementById("hourSwitch").addEventListener("click", () => {
+  showHours = !showHours;
+  document.getElementById("hourSwitch").classList.toggle("on", showHours);
+  document.getElementById("hourMetrics").style.display = showHours ? "grid" : "none";
+});
+document.getElementById("fileInput").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    if (file.name.toLowerCase().endsWith(".pdf")) {
+      extractedFileText = await extractPdfText(file);
+    } else {
+      extractedFileText = await file.text();
+    }
+    document.getElementById("fileStatus").textContent = `Loaded ${file.name}`;
+    updateCombinedPreview();
+    setMessage("ok", `${file.name} loaded successfully.`);
+  } catch (error) {
+    document.getElementById("fileStatus").textContent = "Could not read file.";
+    setMessage("warn", error.message || "Could not read file.");
+  }
+});
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const key = btn.dataset.tab;
+    document.querySelectorAll(".tab-panel").forEach(p => p.style.display = "none");
+    document.getElementById("tab-" + key).style.display = "";
+  });
+});
+function addConfirmed(type){
+  const text = updateCombinedPreview();
+  if (!text || !document.getElementById("bestSac").textContent || document.getElementById("bestSac").textContent === "—") {
+    setMessage("warn", "Run the finder first before saving or confirming.");
+    return;
+  }
+  confirmedCases.unshift({
+    type,
+    code: document.getElementById("bestSac").textContent,
+    text: text.slice(0, 420),
+    ai: document.getElementById("liveAiRecommendation").textContent
+  });
+  confirmedCases = confirmedCases.slice(0, 30);
+  localStorage.setItem("sacFinderConfirmedCases_v2", JSON.stringify(confirmedCases));
+  renderCases();
+  setMessage("ok", type === "confirmed" ? "Result confirmed and saved." : "Result saved to history.");
+}
+updateCombinedPreview();
+setAgentState(-1, []);
+renderCases();
+checkHealth();
+</script>
+</body>
+</html>

@@ -1,78 +1,110 @@
-const http = require("http");
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = process.env.PORT || 3000;
+const INDEX_PATH = path.join(__dirname, 'public', 'index.html');
 
-function send(res, status, content, type = "text/html; charset=utf-8") {
-  res.writeHead(status, { "Content-Type": type });
-  res.end(content);
+function send(res, status, body, type = 'text/plain; charset=utf-8') {
+  res.writeHead(status, { 'Content-Type': type });
+  res.end(body);
+}
+
+function sendJson(res, status, payload) {
+  send(res, status, JSON.stringify(payload), 'application/json; charset=utf-8');
 }
 
 async function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = "";
-    req.on("data", chunk => {
+    let body = '';
+    req.on('data', chunk => {
       body += chunk;
-      if (body.length > 2 * 1024 * 1024) {
-        reject(new Error("Request too large"));
+      if (body.length > 3 * 1024 * 1024) {
+        reject(new Error('Request body too large'));
         req.destroy();
       }
     });
-    req.on("end", () => {
+    req.on('end', () => {
       try {
         resolve(body ? JSON.parse(body) : {});
       } catch {
-        reject(new Error("Invalid JSON"));
+        reject(new Error('Invalid JSON body'));
       }
     });
-    req.on("error", reject);
+    req.on('error', reject);
   });
 }
 
-async function callOpenAI(userText) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
-  const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-
-  if (!apiKey) {
-    return {
-      mode: "fallback",
-      answer:
-        "Няма зададен OPENAI_API_KEY в Render. Добави ключа в Environment Variables, за да работи истинският AI.",
-      checks: [
-        "Провери дали OPENAI_API_KEY е добавен",
-        "Провери дали OPENAI_MODEL е gpt-4.1-mini",
-        "Направи redeploy след промяната"
-      ]
-    };
-  }
-
-  const prompt = `
-You are an aircraft maintenance SAC planning copilot.
-Be practical, concise, and useful.
-The user will give task-card text or maintenance text.
-Return JSON only in this format:
-{
-  "answer": "string",
-  "checks": ["string", "string", "string"]
+function buildFallback(localResult, taskText) {
+  const best = localResult?.final?.ranked?.[0];
+  const recommendation = best
+    ? `Start with ${best.code} as the most likely primary SAC, then confirm whether the surrounding wording is true core work or only access removal.`
+    : 'No strong primary SAC was found from the embedded screen logic. Add more exact task-card wording.';
+  const checks = [
+    'Confirm the exact zone, side, frame, and door location from the task card.',
+    'Separate access wording from the real core operation before finalizing the bundle.',
+    'Compare the best local SAC wording with your actual workbook examples before approval.'
+  ];
+  if (/a321/i.test(taskText || '')) checks.push('Verify whether the task is A321-specific before confirming the code.');
+  return {
+    mode: 'offline_fallback',
+    recommendation,
+    checks,
+    codes: Array.isArray(localResult?.final?.ranked) ? localResult.final.ranked.slice(0, 3).map((item, index) => ({
+      code: item.code,
+      role: index === 0 ? 'most likely primary candidate' : 'alternative candidate',
+      note: item.definition || item.pieces?.[0]?.segment || 'No note available.'
+    })) : []
+  };
 }
 
-User text:
-${userText}
-`;
+async function callOpenAI(taskText, localResult) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+
+  if (!apiKey) return buildFallback(localResult, taskText);
+
+  const topCandidates = Array.isArray(localResult?.final?.ranked)
+    ? localResult.final.ranked.slice(0, 5).map(item => ({
+        code: item.code,
+        score: Math.min(99, Math.round(item.score || 0)),
+        definition: item.definition || '',
+        segment: item.pieces?.[0]?.segment || null
+      }))
+    : [];
+
+  const prompt = [
+    'You are an aircraft maintenance planning copilot helping choose SAC codes.',
+    'Use the supplied local screen evidence first. Be concise and practical.',
+    'Do not invent evidence that is not in the provided context.',
+    'Return JSON only with this exact shape:',
+    '{',
+    '  "recommendation": "string",',
+    '  "checks": ["string", "string", "string"],',
+    '  "codes": [{"code":"string","role":"string","note":"string"}]',
+    '}',
+    '',
+    'TASK TEXT:',
+    taskText,
+    '',
+    'TOP CANDIDATES:',
+    JSON.stringify(topCandidates, null, 2)
+  ].join('\n');
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
+    method: 'POST',
     headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
     },
     body: JSON.stringify({
       model,
       temperature: 0.2,
-      response_format: { type: "json_object" },
+      response_format: { type: 'json_object' },
       messages: [
-        { role: "system", content: "You are a grounded aviation maintenance planning assistant. Return JSON only." },
-        { role: "user", content: prompt }
+        { role: 'system', content: 'You are a grounded aircraft maintenance assistant. Return JSON only.' },
+        { role: 'user', content: prompt }
       ]
     })
   });
@@ -84,232 +116,56 @@ ${userText}
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("No model response content");
-  }
-
-  return JSON.parse(content);
+  if (!content) throw new Error('No model response content');
+  const parsed = JSON.parse(content);
+  return {
+    mode: 'live_ai',
+    recommendation: typeof parsed.recommendation === 'string' ? parsed.recommendation : 'No recommendation returned.',
+    checks: Array.isArray(parsed.checks) ? parsed.checks : [],
+    codes: Array.isArray(parsed.codes) ? parsed.codes : []
+  };
 }
 
-const html = `<!DOCTYPE html>
-<html lang="bg">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SAC Finder AI</title>
-  <style>
-    body {
-      margin: 0;
-      font-family: Arial, sans-serif;
-      background: #f4f7fb;
-      color: #102040;
-    }
-    .wrap {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-    .hero {
-      background: linear-gradient(135deg, #06184d, #0f3b8a);
-      color: white;
-      border-radius: 18px;
-      padding: 28px;
-      margin-bottom: 20px;
-    }
-    .hero h1 {
-      margin: 0 0 10px;
-      font-size: 36px;
-    }
-    .hero h1 span {
-      color: #f7b500;
-    }
-    .card {
-      background: white;
-      border-radius: 18px;
-      padding: 20px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
-      margin-bottom: 20px;
-    }
-    textarea {
-      width: 100%;
-      min-height: 220px;
-      padding: 14px;
-      font-size: 15px;
-      border-radius: 12px;
-      border: 1px solid #ccd6e5;
-      box-sizing: border-box;
-      resize: vertical;
-    }
-    .row {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-top: 14px;
-    }
-    button {
-      border: none;
-      border-radius: 12px;
-      padding: 12px 18px;
-      font-size: 15px;
-      font-weight: bold;
-      cursor: pointer;
-    }
-    .primary {
-      background: #06184d;
-      color: white;
-    }
-    .gold {
-      background: #f7b500;
-      color: #221700;
-    }
-    .muted {
-      background: #e9eef7;
-      color: #102040;
-    }
-    .out {
-      white-space: pre-wrap;
-      line-height: 1.6;
-      background: #f8fbff;
-      border: 1px solid #d9e3f0;
-      border-radius: 12px;
-      padding: 14px;
-      min-height: 120px;
-    }
-    ul {
-      margin-top: 8px;
-      line-height: 1.7;
-    }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="hero">
-      <h1>SAC Finder <span>AI</span></h1>
-      <p>Работещ сайт с AI агент за task-card / maintenance text анализ.</p>
-    </div>
-
-    <div class="card">
-      <h2>Входен текст</h2>
-      <textarea id="taskText" placeholder="Постави task card text, maintenance description или planning comment..."></textarea>
-      <div class="row">
-        <button class="primary" onclick="runAI()">Run AI</button>
-        <button class="muted" onclick="clearAll()">Clear</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>AI отговор</h2>
-      <div id="answer" class="out">Тук ще излезе отговорът.</div>
-    </div>
-
-    <div class="card">
-      <h2>Checks</h2>
-      <ul id="checks">
-        <li>Още няма резултат.</li>
-      </ul>
-    </div>
-  </div>
-
-  <script>
-    async function runAI() {
-      const text = document.getElementById("taskText").value.trim();
-      if (!text) {
-        alert("Постави текст първо.");
-        return;
-      }
-
-      document.getElementById("answer").textContent = "Мисля...";
-      document.getElementById("checks").innerHTML = "<li>Изчакване...</li>";
-
-      try {
-        const res = await fetch("/api/agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text })
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.error || "AI request failed");
-        }
-
-        document.getElementById("answer").textContent = data.answer || "Няма върнат отговор.";
-        const checks = Array.isArray(data.checks) ? data.checks : [];
-        document.getElementById("checks").innerHTML =
-          checks.length ? checks.map(x => "<li>" + x + "</li>").join("") : "<li>Няма checks.</li>";
-      } catch (e) {
-        document.getElementById("answer").textContent = "Грешка: " + e.message;
-        document.getElementById("checks").innerHTML = "<li>Провери Render logs</li>";
-      }
-    }
-
-    function clearAll() {
-      document.getElementById("taskText").value = "";
-      document.getElementById("answer").textContent = "Тук ще излезе отговорът.";
-      document.getElementById("checks").innerHTML = "<li>Още няма резултат.</li>";
-    }
-  </script>
-</body>
-</html>`;
-
 const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/") {
-    return send(res, 200, html);
+  if (req.method === 'GET' && req.url === '/api/health') {
+    return sendJson(res, 200, {
+      ok: true,
+      hasKey: Boolean(process.env.OPENAI_API_KEY),
+      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini'
+    });
   }
 
-  if (req.method === "GET" && req.url === "/api/health") {
-    return send(
-      res,
-      200,
-      JSON.stringify({
-        ok: true,
-        hasKey: Boolean(process.env.OPENAI_API_KEY),
-        model: process.env.OPENAI_MODEL || "gpt-4.1-mini"
-      }),
-      "application/json; charset=utf-8"
-    );
-  }
-
-  if (req.method === "POST" && req.url === "/api/agent") {
+  if (req.method === 'POST' && req.url === '/api/agent') {
     try {
       const body = await readBody(req);
-      const text = String(body.text || "").trim();
-
-      if (!text) {
-        return send(
-          res,
-          400,
-          JSON.stringify({ error: "Missing text" }),
-          "application/json; charset=utf-8"
-        );
+      const taskText = String(body?.taskText || '').trim();
+      if (!taskText) return sendJson(res, 400, { error: 'taskText is required.' });
+      const localResult = body?.localResult || null;
+      const result = await callOpenAI(taskText, localResult);
+      return sendJson(res, 200, result);
+    } catch (error) {
+      const msg = String(error?.message || error);
+      if (msg.includes('insufficient_quota') || msg.includes('429')) {
+        return sendJson(res, 429, {
+          error: 'Live AI is connected, but the API project has no available quota right now. Check OpenAI billing or switch to a project/key with available credits.'
+        });
       }
-
-      const result = await callOpenAI(text);
-
-      return send(
-        res,
-        200,
-        JSON.stringify({
-          answer: result.answer || "Няма отговор.",
-          checks: Array.isArray(result.checks) ? result.checks : []
-        }),
-        "application/json; charset=utf-8"
-      );
-    } catch (e) {
-      return send(
-        res,
-        500,
-        JSON.stringify({ error: e.message || "Server error" }),
-        "application/json; charset=utf-8"
-      );
+      return sendJson(res, 500, { error: msg || 'Unknown server error' });
     }
   }
 
-  return send(res, 404, "Not found", "text/plain; charset=utf-8");
+  if (req.method === 'GET' && req.url === '/') {
+    try {
+      const html = fs.readFileSync(INDEX_PATH, 'utf-8');
+      return send(res, 200, html, 'text/html; charset=utf-8');
+    } catch {
+      return send(res, 500, 'Missing public/index.html', 'text/plain; charset=utf-8');
+    }
+  }
+
+  return send(res, 404, 'Not found', 'text/plain; charset=utf-8');
 });
 
 server.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  console.log('Server running on port ' + PORT);
 });

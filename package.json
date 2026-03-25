@@ -1,12 +1,11 @@
 {
-  "name": "sac-finder-ai-copilot",
+  "name": "sac-finder-ai",
   "version": "1.0.0",
   "private": true,
-  "description": "SAC Finder with local retrieval + AI reasoning copilot",
+  "description": "English SAC Finder AI with premium airline-style interface and live OpenAI endpoint",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server.js"
   },
   "engines": {
     "node": ">=18"
