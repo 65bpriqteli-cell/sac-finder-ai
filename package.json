@@ -1,0 +1,13 @@
+{
+  "name": "sac-finder-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Restricted SAC Finder using SAC Definition and A320 MPD with optional live AI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
