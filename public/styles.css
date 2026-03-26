@@ -29,6 +29,83 @@ body {
     radial-gradient(circle at 85% 8%, rgba(247,181,0,.08), rgba(247,181,0,0) 18%),
     radial-gradient(circle at 15% 12%, rgba(16,51,122,.09), rgba(16,51,122,0) 24%);
 }
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(5, 22, 77, .52);
+  backdrop-filter: blur(10px);
+}
+.auth-card {
+  width: min(100%, 460px);
+  padding: 28px;
+  border-radius: 30px;
+}
+.auth-copy {
+  margin-top: 18px;
+}
+.auth-eyebrow {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.auth-copy h1 {
+  margin: 0 0 10px;
+  font-size: 34px;
+  line-height: 1.05;
+}
+.auth-copy p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+.auth-form label span {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.auth-form input {
+  width: 100%;
+  min-height: 50px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0 14px;
+  font: inherit;
+  background: rgba(248,251,255,.85);
+  outline: none;
+}
+.auth-form input:focus {
+  border-color: rgba(16,51,122,.45);
+  box-shadow: 0 0 0 4px rgba(16,51,122,.08);
+}
+.auth-submit {
+  margin-top: 6px;
+}
+.auth-error {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #fff1f1;
+  border: 1px solid #f1baba;
+  color: #8a2e2e;
+  line-height: 1.5;
+}
 .app { max-width: 1520px; margin: 0 auto; padding: 24px; position: relative; z-index: 1; }
 .card {
   background: var(--card);
@@ -40,9 +117,9 @@ body {
 .hero {
   display: flex;
   align-items: center;
-  padding: 34px;
+  padding: 32px;
   margin-bottom: 22px;
-  min-height: 250px;
+  min-height: 200px;
   background:
     linear-gradient(135deg, rgba(5,22,77,.98), rgba(16,51,122,.94) 50%, rgba(30,90,180,.88));
   color: white;
@@ -51,46 +128,42 @@ body {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 20px;
 }
-.hero-brand {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.lufthansa-lockup {
+.brand-lockup {
   display: inline-flex;
   align-items: center;
   gap: 14px;
   width: fit-content;
   padding: 12px 18px;
   border-radius: 22px;
+  font-weight: 800;
+  letter-spacing: .01em;
+}
+.brand-lockup-light {
   background: rgba(255,255,255,.96);
+  color: #0e245e;
   box-shadow: 0 20px 34px rgba(4, 19, 62, .18);
 }
-.lufthansa-logo {
+.brand-lockup-dark {
+  background: linear-gradient(135deg, rgba(5,22,77,.98), rgba(16,51,122,.94));
+  color: white;
+}
+.brand-logo {
   width: 42px;
   height: 42px;
   object-fit: contain;
+  flex: 0 0 auto;
 }
-.lufthansa-wordmark {
-  height: 24px;
-  width: auto;
-  object-fit: contain;
+.brand-text {
+  font-size: 16px;
+  line-height: 1;
 }
-.eyebrow {
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: .16em;
-  color: rgba(255,255,255,.72);
-  font-weight: 700;
-}
-.hero h1 {
-  font-size: clamp(48px, 8vw, 98px);
-  line-height: .92;
+.hero-title-compact {
   margin: 0;
-  letter-spacing: .08em;
-  max-width: 100%;
+  font-size: clamp(32px, 5vw, 52px);
+  line-height: 1;
+  letter-spacing: .02em;
 }
 .workspace {
   display: grid;
@@ -151,7 +224,7 @@ textarea:focus { border-color: rgba(16,51,122,.4); box-shadow: 0 0 0 4px rgba(16
   border: none;
   cursor: pointer;
   text-decoration: none;
-  transition: transform .2s ease, box-shadow .25s ease, filter .25s ease;
+  transition: transform .2s ease, box-shadow .25s ease;
 }
 .btn::before, .upload-btn::before {
   content: '';
@@ -315,8 +388,8 @@ textarea:focus { border-color: rgba(16,51,122,.4); box-shadow: 0 0 0 4px rgba(16
 @media (max-width: 860px) {
   .grid-2, .best-grid, .details-grid, .ai-output-grid { grid-template-columns: 1fr; }
   .app { padding: 16px; }
-  .hero, .input-card, .result-card, .candidates-card, .ai-card, .operations-card { padding: 18px; }
-  .hero h1 { font-size: clamp(38px, 14vw, 66px); }
-  .lufthansa-lockup { width: 100%; justify-content: center; }
-  .lufthansa-wordmark { max-width: 58vw; }
+  .hero, .input-card, .result-card, .candidates-card, .ai-card, .operations-card, .auth-card { padding: 18px; }
+  .hero-title-compact { font-size: clamp(28px, 9vw, 42px); }
+  .brand-lockup { width: 100%; justify-content: center; }
+  .auth-copy h1 { font-size: 28px; }
 }
