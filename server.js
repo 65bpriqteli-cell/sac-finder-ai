@@ -74,46 +74,35 @@ function getRestrictedSources() {
   return { definitions, mpd, htmlRaw };
 }
 
-function buildFallback(taskText, localResult) {
-  const ranked = Array.isArray(localResult?.final?.ranked) ? localResult.final.ranked.slice(0, 3) : [];
-  const best = ranked[0] || null;
-  const sources = getRestrictedSources();
+function extractResponseText(data) {
+  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
+    return data.output_text;
+  }
 
-  return {
-    mode: 'offline_fallback',
-    answer: best
-      ? `Most likely SAC from the restricted local result is ${best.code}. Validate it against the exact task wording and A320 MPD examples before approving.`
-      : 'Live AI is unavailable because OPENAI_API_KEY is missing. Add the key in Render environment variables.',
-    recommendation: best
-      ? `Start with ${best.code} as the most likely SAC, then verify side, zone, frame, aircraft applicability, and whether the wording describes core work or access only.`
-      : 'OPENAI_API_KEY is missing, so only the restricted offline fallback is available.',
-    checks: [
-      'Confirm exact side, zone, frame, and door/location from the task card.',
-      'Confirm the task is grounded only in SAC Definition and A320 MPD.',
-      'Confirm whether the wording is real work or only access/removal.'
-    ],
-    codes: ranked.map((item, index) => ({
-      code: item.code,
-      role: index === 0 ? 'most likely candidate' : 'alternative candidate',
-      note: item.definition || item.pieces?.[0]?.segment || 'No note available.'
-    })),
-    why: ranked.map((item, index) => `${index === 0 ? 'Primary' : 'Alternative'} candidate: ${item.code}`),
-    trace: [
-      `Task text length: ${String(taskText || '').length}`,
-      `Definitions loaded: ${sources.definitions.length}`,
-      `MPD rows loaded: ${sources.mpd.length}`,
-      `HTML length loaded: ${sources.htmlRaw.length}`
-    ]
-  };
+  if (Array.isArray(data?.output)) {
+    const parts = [];
+    for (const item of data.output) {
+      if (Array.isArray(item?.content)) {
+        for (const content of item.content) {
+          if (content?.type === 'output_text' && typeof content.text === 'string') {
+            parts.push(content.text);
+          }
+        }
+      }
+    }
+    if (parts.length) return parts.join('\n');
+  }
+
+  return '';
 }
 
 async function callOpenAI(taskText, localResult) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
   const model = process.env.OPENAI_MODEL || 'gpt-5-nano';
   const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 
   if (!apiKey) {
-    return buildFallback(taskText, localResult);
+    throw new Error('OPENAI_API_KEY is missing in the runtime environment.');
   }
 
   const { definitions, mpd, htmlRaw } = getRestrictedSources();
@@ -127,14 +116,7 @@ async function callOpenAI(taskText, localResult) {
     'If localResult is present, treat it only as a helper summary, not as a primary source.',
     'Do not invent evidence outside these sources.',
     'Do not omit or truncate source content yourself; work only from what is provided.',
-    'Return JSON only with this exact shape:',
-    '{',
-    '  "recommendation": "string",',
-    '  "why": ["string", "string"],',
-    '  "checks": ["string", "string", "string"],',
-    '  "codes": [{"code":"string","role":"string","note":"string"}],',
-    '  "trace": ["string", "string"]',
-    '}',
+    'Return JSON only with this exact shape.',
     '',
     'TASK TEXT:',
     taskText,
@@ -152,7 +134,41 @@ async function callOpenAI(taskText, localResult) {
     htmlRaw
   ].join('\n');
 
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['recommendation', 'why', 'checks', 'codes', 'trace'],
+    properties: {
+      recommendation: { type: 'string' },
+      why: {
+        type: 'array',
+        items: { type: 'string' }
+      },
+      checks: {
+        type: 'array',
+        items: { type: 'string' }
+      },
+      codes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['code', 'role', 'note'],
+          properties: {
+            code: { type: 'string' },
+            role: { type: 'string' },
+            note: { type: 'string' }
+          }
+        }
+      },
+      trace: {
+        type: 'array',
+        items: { type: 'string' }
+      }
+    }
+  };
+
+  const response = await fetch(`${baseUrl}/responses`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -160,15 +176,34 @@ async function callOpenAI(taskText, localResult) {
     },
     body: JSON.stringify({
       model,
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-      messages: [
+      input: [
         {
           role: 'system',
-          content: 'You are a grounded aircraft maintenance assistant. Return JSON only and stay strictly inside the supplied sources.'
+          content: [
+            {
+              type: 'input_text',
+              text: 'You are a grounded aircraft maintenance assistant. Return structured JSON only and stay strictly inside the supplied sources.'
+            }
+          ]
         },
-        { role: 'user', content: prompt }
-      ]
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: prompt
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'sac_response',
+          strict: true,
+          schema
+        }
+      }
     })
   });
 
@@ -178,7 +213,7 @@ async function callOpenAI(taskText, localResult) {
   }
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
+  const content = extractResponseText(data);
   if (!content) {
     throw new Error('No model response content');
   }
@@ -216,8 +251,9 @@ const server = http.createServer(async (req, res) => {
     const { definitions, mpd, htmlRaw } = getRestrictedSources();
     return sendJson(res, 200, {
       ok: true,
-      hasKey: Boolean(process.env.OPENAI_API_KEY),
+      hasKey: Boolean(String(process.env.OPENAI_API_KEY || '').trim()),
       model: process.env.OPENAI_MODEL || 'gpt-5-nano',
+      apiStyle: 'responses',
       sources: {
         definitions: definitions.length,
         mpd: mpd.length,
@@ -248,12 +284,22 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     } catch (error) {
       const msg = String(error?.message || error);
-      if (msg.includes('insufficient_quota') || msg.includes('429')) {
+      if (msg.includes('429')) {
         return sendJson(res, 429, {
-          error: 'Live AI is connected, but the API project has no available quota right now. Check OpenAI billing or switch to a project/key with available credits.'
+          error: 'OpenAI returned a rate limit or quota error. Check the project billing, model access, or retry later.',
+          detail: msg
         });
       }
-      return sendJson(res, 500, { error: msg || 'Unknown server error' });
+      if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
+        return sendJson(res, 401, {
+          error: 'The OpenAI API key was rejected by OpenAI.',
+          detail: msg
+        });
+      }
+      return sendJson(res, 500, {
+        error: 'OpenAI request failed.',
+        detail: msg
+      });
     }
   }
 
