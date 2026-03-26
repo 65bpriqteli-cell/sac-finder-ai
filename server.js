@@ -109,7 +109,7 @@ function buildFallback(taskText, localResult) {
 
 async function callOpenAI(taskText, localResult) {
   const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  const model = process.env.OPENAI_MODEL || 'gpt-5-nano';
   const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
 
   if (!apiKey) {
@@ -217,7 +217,7 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       ok: true,
       hasKey: Boolean(process.env.OPENAI_API_KEY),
-      model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+      model: process.env.OPENAI_MODEL || 'gpt-5-nano',
       sources: {
         definitions: definitions.length,
         mpd: mpd.length,
