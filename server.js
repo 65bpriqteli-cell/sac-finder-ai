@@ -37,14 +37,6 @@ function readJsonFileSafe(filePath, fallback = null) {
   }
 }
 
-function readTextFileSafe(filePath, fallback = '') {
-  try {
-    return fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    return fallback;
-  }
-}
-
 async function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -66,43 +58,59 @@ async function readBody(req) {
   });
 }
 
-function getRestrictedSources() {
+function getDbCounts() {
   const db = readJsonFileSafe(DB_PATH, {}) || {};
-  const definitions = Array.isArray(db.definitions) ? db.definitions : [];
-  const mpd = Array.isArray(db.mpd) ? db.mpd : [];
-  const htmlRaw = readTextFileSafe(INDEX_PATH, '');
-  return { definitions, mpd, htmlRaw };
+  return {
+    definitions: Array.isArray(db.definitions) ? db.definitions.length : 0,
+    mpd: Array.isArray(db.mpd) ? db.mpd.length : 0,
+    apl: Array.isArray(db.apl) ? db.apl.length : 0,
+    sacdb: Array.isArray(db.sacdb) ? db.sacdb.length : 0,
+    sheet1: Array.isArray(db.sheet1) ? db.sheet1.length : 0,
+  };
 }
 
 function buildFallback(taskText, localResult) {
-  const ranked = Array.isArray(localResult?.final?.ranked) ? localResult.final.ranked.slice(0, 3) : [];
-  const best = ranked[0] || null;
-  const sources = getRestrictedSources();
+  const decision = localResult?.final?.decision || 'NO_SAC';
+  const best = localResult?.final?.best || null;
+  if (decision === 'MATCH' && best) {
+    return {
+      mode: 'offline_fallback',
+      recommendation: `Validated SAC match: ${best.code}`,
+      why: [
+        'The local engine found an authoritative database match.',
+        'The result passed the strict deterministic rules.'
+      ],
+      checks: [
+        'Confirm the task text is complete.',
+        'Confirm aircraft applicability and side/frame details.',
+        'Confirm the restricted database contains the needed record.'
+      ],
+      codes: [{ code: best.code, role: 'validated SAC', note: best.definition || 'No definition text available.' }],
+      trace: [
+        `Decision: ${decision}`,
+        `Task text length: ${String(taskText || '').length}`
+      ]
+    };
+  }
 
   return {
     mode: 'offline_fallback',
-    answer: best
-      ? `Most likely SAC from the restricted local result is ${best.code}. Validate it against the exact task wording and A320 MPD examples before approving.`
-      : 'Live AI is unavailable because OPENAI_API_KEY is missing. Add the key in Render environment variables.',
-    recommendation: best
-      ? `Start with ${best.code} as the most likely SAC, then verify side, zone, frame, aircraft applicability, and whether the wording describes core work or access only.`
-      : 'OPENAI_API_KEY is missing, so only the restricted offline fallback is available.',
-    checks: [
-      'Confirm exact side, zone, frame, and door/location from the task card.',
-      'Confirm the task is grounded only in SAC Definition and A320 MPD.',
-      'Confirm whether the wording is real work or only access/removal.'
+    recommendation: decision === 'AMBIGUOUS'
+      ? 'No SAC released automatically because more than one validated candidate exists.'
+      : 'No SAC released because no validated database match was found.',
+    why: [
+      'The system is in strict mode and does not guess.',
+      `Local decision: ${decision}`
     ],
-    codes: ranked.map((item, index) => ({
-      code: item.code,
-      role: index === 0 ? 'most likely candidate' : 'alternative candidate',
-      note: item.definition || item.pieces?.[0]?.segment || 'No note available.'
-    })),
-    why: ranked.map((item, index) => `${index === 0 ? 'Primary' : 'Alternative'} candidate: ${item.code}`),
+    checks: [
+      'Add more exact wording from the task card.',
+      'Confirm the component and operation are explicitly stated.',
+      'Verify that the database actually contains the matching record.'
+    ],
+    codes: [],
     trace: [
-      `Task text length: ${String(taskText || '').length}`,
-      `Definitions loaded: ${sources.definitions.length}`,
-      `MPD rows loaded: ${sources.mpd.length}`,
-      `HTML length loaded: ${sources.htmlRaw.length}`
+      `Decision: ${decision}`,
+      `Task text length: ${String(taskText || '').length}`
     ]
   };
 }
@@ -116,17 +124,14 @@ async function callOpenAI(taskText, localResult) {
     return buildFallback(taskText, localResult);
   }
 
-  const { definitions, mpd, htmlRaw } = getRestrictedSources();
-
   const prompt = [
-    'You are an aircraft maintenance planning copilot helping choose SAC codes.',
-    'Use ONLY these sources:',
-    '1) SAC Definition from db.json',
-    '2) A320 MPD from db.json',
-    '3) The FULL RAW HTML from public/index.html',
-    'If localResult is present, treat it only as a helper summary, not as a primary source.',
-    'Do not invent evidence outside these sources.',
-    'Do not omit or truncate source content yourself; work only from what is provided.',
+    'You are a strict SAC verification assistant.',
+    'You may use ONLY the supplied LOCAL_RESULT.',
+    'Do not invent missing evidence.',
+    'If LOCAL_RESULT.final.decision is NO_SAC, return no SAC.',
+    'If LOCAL_RESULT.final.decision is AMBIGUOUS, return no SAC and explain ambiguity briefly.',
+    'If LOCAL_RESULT.final.decision is MATCH, you may return ONLY the validated best SAC from LOCAL_RESULT.final.best.code.',
+    'Never introduce any code that does not appear in LOCAL_RESULT.',
     'Return JSON only with this exact shape:',
     '{',
     '  "recommendation": "string",',
@@ -139,17 +144,8 @@ async function callOpenAI(taskText, localResult) {
     'TASK TEXT:',
     taskText,
     '',
-    'LOCAL RESULT HELPER (optional):',
-    JSON.stringify(localResult || null, null, 2),
-    '',
-    'SAC DEFINITION SOURCE:',
-    JSON.stringify(definitions, null, 2),
-    '',
-    'A320 MPD SOURCE:',
-    JSON.stringify(mpd, null, 2),
-    '',
-    'FULL RAW HTML SOURCE:',
-    htmlRaw
+    'LOCAL_RESULT:',
+    JSON.stringify(localResult || null, null, 2)
   ].join('\n');
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -160,13 +156,10 @@ async function callOpenAI(taskText, localResult) {
     },
     body: JSON.stringify({
       model,
-      temperature: 0.2,
+      temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
-        {
-          role: 'system',
-          content: 'You are a grounded aircraft maintenance assistant. Return JSON only and stay strictly inside the supplied sources.'
-        },
+        { role: 'system', content: 'Return strict grounded JSON only.' },
         { role: 'user', content: prompt }
       ]
     })
@@ -179,19 +172,11 @@ async function callOpenAI(taskText, localResult) {
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error('No model response content');
-  }
-
+  if (!content) throw new Error('No model response content');
   const parsed = JSON.parse(content);
-  const recommendation = typeof parsed.recommendation === 'string'
-    ? parsed.recommendation
-    : 'No recommendation returned.';
-
   return {
     mode: 'live_ai',
-    answer: recommendation,
-    recommendation,
+    recommendation: typeof parsed.recommendation === 'string' ? parsed.recommendation : 'No recommendation returned.',
     why: Array.isArray(parsed.why) ? parsed.why : [],
     checks: Array.isArray(parsed.checks) ? parsed.checks : [],
     codes: Array.isArray(parsed.codes) ? parsed.codes : [],
@@ -213,16 +198,11 @@ const server = http.createServer(async (req, res) => {
   const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
 
   if (req.method === 'GET' && urlPath === '/api/health') {
-    const { definitions, mpd, htmlRaw } = getRestrictedSources();
     return sendJson(res, 200, {
       ok: true,
       hasKey: Boolean(process.env.OPENAI_API_KEY),
       model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      sources: {
-        definitions: definitions.length,
-        mpd: mpd.length,
-        htmlLength: htmlRaw.length
-      }
+      sources: getDbCounts()
     });
   }
 
@@ -242,7 +222,6 @@ const server = http.createServer(async (req, res) => {
       if (!taskText) {
         return sendJson(res, 400, { error: 'taskText is required.' });
       }
-
       const localResult = body?.localResult || null;
       const result = await callOpenAI(taskText, localResult);
       return sendJson(res, 200, result);
