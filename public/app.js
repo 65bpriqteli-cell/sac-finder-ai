@@ -22,7 +22,10 @@ async function loadDb() {
     state.db.sacdb.length,
     state.db.sheet1.length,
   ].reduce((a, b) => a + b, 0);
-  $('dbStats').textContent = `${total.toLocaleString()} rows`;
+  const statsNode = $('dbStats');
+  if (statsNode) {
+    statsNode.textContent = `${total.toLocaleString()} rows`;
+  }
 }
 
 function combinedInput() {
@@ -279,16 +282,22 @@ function bindAuth() {
     const username = userInput.value.trim();
     const password = passInput.value;
     if (username === AUTH_USER && password === AUTH_PASS) {
-      sessionStorage.setItem(AUTH_KEY, '1');
-      errorBox.hidden = true;
-      $('authScreen').hidden = true;
-      $('appRoot').hidden = false;
-      if (!appInitialized) {
+      try {
         await initApp();
+        sessionStorage.setItem(AUTH_KEY, '1');
+        errorBox.hidden = true;
+        $('authScreen').hidden = true;
+        $('appRoot').hidden = false;
+      } catch (error) {
+        errorBox.hidden = false;
+        errorBox.textContent = `Initialization failed: ${error.message || error}`;
+        $('appRoot').hidden = true;
+        $('authScreen').hidden = false;
       }
       return;
     }
     errorBox.hidden = false;
+    errorBox.textContent = 'Wrong username or password.';
     passInput.value = '';
     passInput.focus();
   });
@@ -308,9 +317,18 @@ async function initApp() {
     bindAuth();
     const authorized = sessionStorage.getItem(AUTH_KEY) === '1';
     if (authorized) {
-      $('authScreen').hidden = true;
-      $('appRoot').hidden = false;
-      await initApp();
+      try {
+        await initApp();
+        $('authScreen').hidden = true;
+        $('appRoot').hidden = false;
+      } catch (error) {
+        sessionStorage.removeItem(AUTH_KEY);
+        $('authScreen').hidden = false;
+        $('appRoot').hidden = true;
+        const errorBox = $('authError');
+        errorBox.hidden = false;
+        errorBox.textContent = `Initialization failed: ${error.message || error}`;
+      }
       return;
     }
     $('authScreen').hidden = false;
