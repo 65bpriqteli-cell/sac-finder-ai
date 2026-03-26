@@ -4,6 +4,7 @@ const path = require('path');
 
 const PORT = process.env.PORT || 3000;
 const INDEX_PATH = path.join(__dirname, 'public', 'index.html');
+const DB_PATH = path.join(__dirname, 'public', 'db.json');
 
 function send(res, status, body, type = 'text/plain; charset=utf-8') {
   res.writeHead(status, { 'Content-Type': type });
@@ -39,10 +40,10 @@ function buildFallback(localResult, taskText) {
   const best = localResult?.final?.ranked?.[0];
   const recommendation = best
     ? `Start with ${best.code} as the most likely primary SAC, then confirm whether the surrounding wording is true core work or only access removal.`
-    : 'No strong primary SAC was found from the embedded screen logic. Add more exact task-card wording.';
+    : 'No strong primary SAC was found from the restricted local logic. Add more exact task-card wording.';
   const checks = [
     'Confirm the exact zone, side, frame, and door location from the task card.',
-    'Separate access wording from the real core operation before finalizing the bundle.',
+    'The matching scope is restricted to SAC Definition and A320 MPD only.',
     'Compare the best local SAC wording with your actual workbook examples before approval.'
   ];
   if (/a321/i.test(taskText || '')) checks.push('Verify whether the task is A321-specific before confirming the code.');
@@ -70,14 +71,16 @@ async function callOpenAI(taskText, localResult) {
         code: item.code,
         score: Math.min(99, Math.round(item.score || 0)),
         definition: item.definition || '',
-        segment: item.pieces?.[0]?.segment || null
+        segment: item.pieces?.[0]?.segment || null,
+        source: item.pieces?.[0]?.source || null
       }))
     : [];
 
   const prompt = [
     'You are an aircraft maintenance planning copilot helping choose SAC codes.',
-    'Use the supplied local screen evidence first. Be concise and practical.',
+    'Use the supplied restricted local evidence first. Be concise and practical.',
     'Do not invent evidence that is not in the provided context.',
+    'The candidate generation was restricted to SAC Definition and A320 MPD only.',
     'Return JSON only with this exact shape:',
     '{',
     '  "recommendation": "string",',
@@ -133,6 +136,15 @@ const server = http.createServer(async (req, res) => {
       hasKey: Boolean(process.env.OPENAI_API_KEY),
       model: process.env.OPENAI_MODEL || 'gpt-4.1-mini'
     });
+  }
+
+  if (req.method === 'GET' && req.url === '/db.json') {
+    try {
+      const db = fs.readFileSync(DB_PATH, 'utf-8');
+      return send(res, 200, db, 'application/json; charset=utf-8');
+    } catch {
+      return sendJson(res, 500, { error: 'Missing db.json' });
+    }
   }
 
   if (req.method === 'POST' && req.url === '/api/agent') {
