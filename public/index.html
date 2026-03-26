@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SAC Finder AI Copilot</title>
+  <title>SAC Finder</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -13,35 +13,15 @@
   <div class="page-shell"></div>
   <main class="app">
     <section class="hero card">
-      <div class="hero-copy">
-        <div class="eyebrow">SAC Finder • AI Copilot</div>
-        <h1>Find SAC codes with <span>flexible reasoning</span>, not only exact string matching.</h1>
-        <p>
-          Hybrid workflow: local retrieval from your embedded SAC / MPD / APL data + optional AI agent
-          that reasons over the task card, access wording, operation type, evidence, and likely bundle combinations.
-        </p>
-        <div class="hero-pills">
-          <span class="chip">Core vs Access split</span>
-          <span class="chip">Task card / PDF input</span>
-          <span class="chip">Top evidence trace</span>
-          <span class="chip chip-gold">AI reasoning layer</span>
+      <div class="hero-copy hero-copy-minimal">
+        <div class="hero-brand">
+          <div class="lufthansa-lockup">
+            <img class="lufthansa-logo" src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Lufthansa%20Logo%202018%20crane.svg" alt="Lufthansa logo" />
+            <img class="lufthansa-wordmark" src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Lufthansa%20Logo%202018.svg" alt="Lufthansa" />
+          </div>
+          <div class="eyebrow">SAC Finder</div>
         </div>
-      </div>
-      <div class="hero-side">
-        <div class="hero-stat">
-          <strong id="dbStats">Loading…</strong>
-          <span>rows available inside the local knowledge base</span>
-        </div>
-        <div class="hero-box">
-          <div class="hero-box-title">How it thinks</div>
-          <ol>
-            <li>Reads task card text and planning comments</li>
-            <li>Splits operations and detects remove / install / inspect / repair / replace</li>
-            <li>Separates access wording from probable core work</li>
-            <li>Searches definitions, MPD, APL, and Sheet1 rows</li>
-            <li>Lets AI reason over the retrieved evidence</li>
-          </ol>
-        </div>
+        <h1>SAC FINDER</h1>
       </div>
     </section>
 
