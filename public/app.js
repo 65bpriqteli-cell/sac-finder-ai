@@ -1,11 +1,15 @@
-
 const state = {
   db: null,
   localResult: null,
   aiResult: null,
 };
 
+const AUTH_USER = 'luf';
+const AUTH_PASS = 'sofia1';
+const AUTH_KEY = 'sac_finder_auth_ok';
+
 const $ = (id) => document.getElementById(id);
+let appInitialized = false;
 
 async function loadDb() {
   const res = await fetch('/db.json');
@@ -264,14 +268,58 @@ function bindEvents() {
   });
 }
 
+function bindAuth() {
+  const form = $('authForm');
+  const errorBox = $('authError');
+  const userInput = $('authUsername');
+  const passInput = $('authPassword');
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const username = userInput.value.trim();
+    const password = passInput.value;
+    if (username === AUTH_USER && password === AUTH_PASS) {
+      sessionStorage.setItem(AUTH_KEY, '1');
+      errorBox.hidden = true;
+      $('authScreen').hidden = true;
+      $('appRoot').hidden = false;
+      if (!appInitialized) {
+        await initApp();
+      }
+      return;
+    }
+    errorBox.hidden = false;
+    passInput.value = '';
+    passInput.focus();
+  });
+}
+
+async function initApp() {
+  if (appInitialized) return;
+  await loadDb();
+  bindEvents();
+  combinedInput();
+  updateStep(0, false);
+  appInitialized = true;
+}
+
 (async function init() {
   try {
-    await loadDb();
-    bindEvents();
-    combinedInput();
-    updateStep(0, false);
+    bindAuth();
+    const authorized = sessionStorage.getItem(AUTH_KEY) === '1';
+    if (authorized) {
+      $('authScreen').hidden = true;
+      $('appRoot').hidden = false;
+      await initApp();
+      return;
+    }
+    $('authScreen').hidden = false;
+    $('appRoot').hidden = true;
+    $('authUsername').focus();
   } catch (error) {
     console.error(error);
-    setMessage(`Initialization failed: ${error.message || error}`, 'error');
+    const errorBox = $('authError');
+    errorBox.hidden = false;
+    errorBox.textContent = `Initialization failed: ${error.message || error}`;
   }
 })();
