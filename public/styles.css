@@ -21,6 +21,7 @@ body {
     radial-gradient(circle at top left, rgba(255,255,255,.9), rgba(255,255,255,0) 28%),
     linear-gradient(180deg, var(--bg2), var(--bg));
 }
+[hidden] { display: none !important; }
 .page-shell {
   position: fixed;
   inset: 0;
@@ -154,6 +155,9 @@ body {
   height: 42px;
   object-fit: contain;
   flex: 0 0 auto;
+}
+.brand-lockup-dark .brand-logo {
+  filter: brightness(0) invert(1);
 }
 .brand-text {
   font-size: 16px;
