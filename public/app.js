@@ -1,13 +1,7 @@
-const state = {
-  db: null,
-  localResult: null,
-  aiResult: null,
-};
-
+const state = { db: null, localResult: null, aiResult: null };
 const AUTH_USER = 'luf';
 const AUTH_PASS = 'sofia1';
 const AUTH_KEY = 'sac_finder_auth_ok';
-
 const $ = (id) => document.getElementById(id);
 let appInitialized = false;
 
@@ -15,17 +9,6 @@ async function loadDb() {
   const res = await fetch('/db.json');
   if (!res.ok) throw new Error('Failed to load db.json');
   state.db = await res.json();
-  const total = [
-    state.db.definitions.length,
-    state.db.mpd.length,
-    state.db.apl.length,
-    state.db.sacdb.length,
-    state.db.sheet1.length,
-  ].reduce((a, b) => a + b, 0);
-  const statsNode = $('dbStats');
-  if (statsNode) {
-    statsNode.textContent = `${total.toLocaleString()} rows`;
-  }
 }
 
 function combinedInput() {
@@ -52,34 +35,33 @@ function setMessage(text, type = 'info') {
   box.style.color = type === 'error' ? '#8a2e2e' : '#26427c';
 }
 
-function pillClass(score) {
-  return 'pill ' + SACEngine.confidenceClass(score);
+function decisionMeta(result) {
+  const d = result?.final?.decision || 'NO_SAC';
+  if (d === 'MATCH') return { label: 'Exact match', pill: 'pill pill-high', short: 'Exact match found' };
+  if (d === 'REVIEW') return { label: 'Manual review', pill: 'pill pill-medium', short: 'More than one exact match' };
+  return { label: 'No SAC', pill: 'pill pill-low', short: 'No exact match' };
 }
 
 function renderLocalResult(result) {
   state.localResult = result;
+  const meta = decisionMeta(result);
   const best = result?.final?.best;
-  $('bestSac').textContent = best ? best.code : '—';
-  $('bestConfidence').textContent = best ? `${SACEngine.confidenceLabel(best.score)} • ${Math.min(99, Math.round(best.score))}%` : '—';
-  $('coreHours').textContent = result?.final?.coreHours ? `${result.final.coreHours} MH` : '—';
-  $('accessHours').textContent = result?.final?.accessHours ? `${result.final.accessHours} MH` : '—';
+
+  $('bestSac').textContent = best ? best.code : 'NO SAC';
+  $('bestConfidence').textContent = meta.short;
+  $('coreHours').textContent = '—';
+  $('accessHours').textContent = '—';
   $('definitionText').textContent = result?.final?.definitionText || '—';
-  $('bestSource').textContent = best && best.pieces[0] && best.pieces[0].source ? `${best.pieces[0].source.source} / ${best.pieces[0].source.ref}` : '—';
-  $('bestMatchText').textContent = result?.final?.topCoreSegment?.segment || '—';
+  $('bestSource').textContent = best && best.sourceMatch ? `${best.sourceMatch.source} / ${best.sourceMatch.ref}` : '—';
+  $('bestMatchText').textContent = result?.final?.topCoreSegment?.segment || result?.final?.decisionText || '—';
   $('accessText').textContent = result?.final?.accessText || '—';
 
   const status = $('statusPill');
-  if (best) {
-    status.className = pillClass(best.score);
-    status.textContent = 'Local engine ready';
-  } else {
-    status.className = 'pill';
-    status.textContent = 'No result';
-  }
+  status.className = meta.pill;
+  status.textContent = meta.label;
 
-  $('candidateList').innerHTML = result.final.ranked.slice(0, 8).map((item) => {
-    const score = Math.min(99, Math.round(item.score));
-    const source = item.pieces[0]?.source ? `${item.pieces[0].source.source} / ${item.pieces[0].source.ref}` : 'Definition-based';
+  $('candidateList').innerHTML = (result.final.ranked || []).map((item) => {
+    const source = item.source ? `${item.source.source} / ${item.source.ref}` : '—';
     return `
       <article class="candidate-item">
         <div class="candidate-top">
@@ -87,30 +69,29 @@ function renderLocalResult(result) {
             <div class="candidate-code">${item.code}</div>
             <div class="candidate-meta">${source}</div>
           </div>
-          <div class="score-box ${pillClass(item.score)}">${score}%</div>
+          <div class="pill pill-high">Exact row</div>
         </div>
-        <div class="bar"><span style="width:${score}%"></span></div>
         <div class="small-muted" style="margin-top:10px;">${item.definition || 'No definition text found.'}</div>
       </article>
     `;
-  }).join('') || '<div class="detail-box"><p>No candidates yet.</p></div>';
+  }).join('') || '<div class="detail-box"><p>No exact SAC rows found.</p></div>';
 
   $('operationsList').innerHTML = result.segments.map((seg) => {
-    const top = seg.candidates[0];
-    const tagClass = seg.type === 'access' ? 'pill pill-medium' : 'pill pill-high';
-    const tagText = seg.type === 'access' ? 'Access-like' : 'Core-like';
+    const match = seg.exactMatches && seg.exactMatches[0] ? seg.exactMatches[0] : null;
+    const tagClass = seg.decision === 'EXACT' ? 'pill pill-high' : (seg.decision === 'MULTIPLE' ? 'pill pill-medium' : 'pill pill-low');
+    const tagText = seg.decision === 'EXACT' ? 'Exact row found' : (seg.decision === 'MULTIPLE' ? 'Multiple exact rows' : 'No exact row');
     return `
       <article class="operation-item">
         <div class="operation-top">
           <div>
-            <strong>${seg.op.toUpperCase()}</strong>
+            <strong>${seg.op ? seg.op.toUpperCase() : 'NO OPERATION'}</strong>
             <div class="small-muted" style="margin-top:8px;">${seg.segment}</div>
           </div>
           <div class="${tagClass}">${tagText}</div>
         </div>
         <div class="small-muted" style="margin-top:12px;">
-          <strong>Best segment match:</strong> ${top ? `${top.code} — ${top.definition || 'no definition text'}` : 'No strong candidate'}<br>
-          <strong>APL access:</strong> ${seg.apl ? `${seg.apl.description} (Row ${seg.apl.row})` : 'No APL row used'}
+          <strong>Search result:</strong> ${match ? `${match.code} from ${match.source} / ${match.ref}` : seg.reason}<br>
+          <strong>Mode:</strong> strict exact search
         </div>
       </article>
     `;
@@ -128,13 +109,51 @@ function updateStep(index, doneBefore = true) {
 
 function renderAiResult(data) {
   state.aiResult = data;
-  $('aiModePill').textContent = data.mode === 'live_ai' ? 'Live AI' : 'Offline reasoning';
+  $('aiModePill').textContent = 'Strict search';
   $('aiRecommendation').textContent = data.recommendation || 'No recommendation.';
   $('aiWhy').innerHTML = (data.why || []).map((item) => `<li>${item}</li>`).join('') || '<li>No reasoning returned.</li>';
   $('aiChecks').innerHTML = (data.checks || []).map((item) => `<li>${item}</li>`).join('') || '<li>No checks returned.</li>';
-  $('aiCodes').innerHTML = (data.codes || []).map((item) => `<li><strong>${item.code}</strong>${item.role ? ` — ${item.role}` : ''}${item.note ? `<br><span class="small-muted">${item.note}</span>` : ''}</li>`).join('') || '<li>No candidate bundle returned.</li>';
+  $('aiCodes').innerHTML = (data.codes || []).map((item) => `<li><strong>${item.code}</strong>${item.role ? ` — ${item.role}` : ''}${item.note ? `<br><span class="small-muted">${item.note}</span>` : ''}</li>`).join('') || '<li>No SAC released.</li>';
   $('aiTrace').textContent = (data.trace || []).join('\n') || 'No trace returned.';
   updateStep(4, true);
+}
+
+function buildStrictResult(result) {
+  const best = result?.final?.best || null;
+  const segments = result?.segments || [];
+  if (result?.final?.decision === 'MATCH' && best && best.sourceMatch) {
+    return {
+      recommendation: `Exact SAC match found: ${best.code}`,
+      why: [
+        `Detected operation: ${best.sourceMatch.op}`,
+        `Exact row found in ${best.sourceMatch.source} / ${best.sourceMatch.ref}`,
+        `Matched segment: ${best.sourceMatch.segment}`
+      ],
+      checks: [
+        'The code was released only because one exact authoritative match was found.',
+        'No percentages were used in this decision.',
+        'No alternative SAC was released.'
+      ],
+      codes: [{ code: best.code, role: 'exact match', note: best.definition || 'No definition text found.' }],
+      trace: segments.map((s, i) => `Segment ${i + 1}: ${s.decision} — ${s.segment}`)
+    };
+  }
+
+  return {
+    recommendation: 'No SAC released because no single exact authoritative match was found.',
+    why: [
+      'This mode works as a strict search engine, not a suggestion engine.',
+      'If the operation is not found exactly, the result stays NO SAC.',
+      'If more than one exact code appears, no automatic SAC is allowed.'
+    ],
+    checks: [
+      'Add the exact wording from the task card if needed.',
+      'Make sure the operation is explicitly present in the text.',
+      'Check whether the database really contains the exact operation row.'
+    ],
+    codes: [],
+    trace: segments.map((s, i) => `Segment ${i + 1}: ${s.decision} — ${s.segment}`)
+  };
 }
 
 async function runLocal() {
@@ -145,7 +164,7 @@ async function runLocal() {
   }
   const result = SACEngine.analyzeText(state.db, text);
   renderLocalResult(result);
-  setMessage('Local engine finished. Now you can also run the AI copilot for flexible reasoning.');
+  setMessage('Strict search finished. SAC is released only on one exact authoritative match.');
 }
 
 async function runAi() {
@@ -158,44 +177,12 @@ async function runAi() {
     const result = SACEngine.analyzeText(state.db, text);
     renderLocalResult(result);
   }
-
   updateStep(0, false);
-  $('aiTrace').textContent = 'Reading task text…';
-  $('aiRecommendation').textContent = 'Thinking…';
-  $('aiWhy').innerHTML = '';
-  $('aiChecks').innerHTML = '';
-  $('aiCodes').innerHTML = '';
-
   updateStep(1, true);
-  const payload = {
-    taskText: text,
-    localResult: state.localResult,
-  };
-
-  try {
-    updateStep(2, true);
-    $('aiTrace').textContent = 'Reading task text…\nRetrieving evidence from local database…\nReasoning over top candidates…';
-    const res = await fetch('/api/agent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'AI endpoint failed.');
-    }
-    const data = await res.json();
-    renderAiResult(data);
-    setMessage(data.mode === 'live_ai'
-      ? 'AI copilot finished with live model reasoning.'
-      : 'AI key not configured, so the site used the built-in offline reasoning fallback.');
-  } catch (error) {
-    updateStep(0, false);
-    $('aiModePill').textContent = 'Error';
-    $('aiRecommendation').textContent = 'AI request failed.';
-    $('aiTrace').textContent = error.message || String(error);
-    setMessage(error.message || 'AI request failed.', 'error');
-  }
+  updateStep(2, true);
+  const strictResult = buildStrictResult(state.localResult);
+  renderAiResult(strictResult);
+  setMessage('Strict exact search completed. No guessing was used.');
 }
 
 async function extractPdfText(file) {
@@ -235,7 +222,7 @@ function bindEvents() {
     $('accessHours').textContent = '—';
     $('statusPill').className = 'pill';
     $('statusPill').textContent = 'Idle';
-    $('aiRecommendation').textContent = 'Run AI copilot to get a more flexible recommendation.';
+    $('aiRecommendation').textContent = 'Run AI copilot to get a strict exact-search result.';
     $('aiWhy').innerHTML = '';
     $('aiChecks').innerHTML = '';
     $('aiCodes').innerHTML = '';

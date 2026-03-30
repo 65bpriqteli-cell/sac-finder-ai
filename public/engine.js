@@ -6,11 +6,6 @@
     global.SACEngine = factory();
   }
 })(typeof window !== 'undefined' ? window : globalThis, function () {
-  const ACCESS_HINTS = [
-    'panel','access panel','cover','hatch','fairing','door panel','trim','lining','liner','open panel','gain access',
-    'access door','sidewall','ceiling panel','floor panel','cover panel','remove lining','open trim'
-  ];
-
   const OP_PATTERNS = [
     { name: 'remove', regex: /\b(remove|removal|rmvl|detach|strip\s*out)\b/i },
     { name: 'install', regex: /\b(install|installation|inst|fit|reinstall)\b/i },
@@ -24,11 +19,14 @@
     'description','planning','comment','full','area','side','fin','via','after','before','around','system','only','note',
     'zone','general','detail','detailed','visual','special','internal','external','installed','condition','operation',
     'operator','operators','depending','environment','experience','recommended','guidance','previous','accomplishment',
-    'left','right','lh','rh','valid','instead','refer','section','introduction','additional','level','managed','component',
+    'left','right','lh','rh','valid','instead','refer','section','introduction','additional','level','managed',
     'door','doors','structure','internal','external','compartment'
   ]);
 
-  const OP_WORDS = new Set(['remove','removal','rmvl','detach','strip','out','install','installation','inst','fit','reinstall','inspect','inspection','check','gvi','dvi','examine','test','verify','repair','rework','restore','blend','rectify','replace','repl','renew','change']);
+  const ACCESS_HINTS = [
+    'panel','access panel','cover','hatch','fairing','door panel','trim','lining','liner','open panel','gain access',
+    'access door','sidewall','ceiling panel','floor panel','cover panel','remove lining','open trim'
+  ];
 
   function normalizeText(text) {
     return (text || '')
@@ -43,33 +41,12 @@
     return normalizeText(text).split(' ').filter(Boolean);
   }
 
-  function extractSignalTokens(text) {
-    return [...new Set(tokenize(text).filter((w) => w.length > 1 && !STOP_WORDS.has(w) && !OP_WORDS.has(w)))];
-  }
-
-  function buildSignalPhrases(text) {
-    const tokens = extractSignalTokens(text);
-    const phrases = new Set();
-    for (let size = 2; size <= 4; size++) {
-      for (let i = 0; i <= tokens.length - size; i++) {
-        const phrase = tokens.slice(i, i + size).join(' ').trim();
-        if (phrase.length >= 5) phrases.add(phrase);
-      }
-    }
-    return [...phrases];
-  }
-
-  function detectOperations(text) {
-    return OP_PATTERNS.filter((op) => op.regex.test(text || '')).map((op) => op.name);
-  }
-
   function detectOperation(text) {
-    return detectOperations(text)[0] || 'analyze';
-  }
-
-  function containsOperation(text, opName) {
-    const found = OP_PATTERNS.find((op) => op.name === opName);
-    return found ? found.regex.test(text || '') : false;
+    const raw = text || '';
+    for (const op of OP_PATTERNS) {
+      if (op.regex.test(raw)) return op.name;
+    }
+    return null;
   }
 
   function detectAccessLike(text) {
@@ -85,26 +62,26 @@
       .filter((s) => s.length > 5);
   }
 
-  function countOverlap(tokens, sourceText) {
+  function signalTokens(text) {
+    const op = detectOperation(text);
+    return tokenize(text).filter((t) => {
+      if (!t || t.length <= 1) return false;
+      if (STOP_WORDS.has(t)) return false;
+      if (op && OP_PATTERNS.find((p) => p.name === op)?.regex.test(t)) return false;
+      return true;
+    });
+  }
+
+  function allTokensPresent(tokens, sourceText) {
+    if (!tokens.length) return false;
     const sourceTokens = new Set(tokenize(sourceText));
-    let overlap = 0;
-    for (const t of tokens) {
-      if (sourceTokens.has(t)) overlap++;
-    }
-    return overlap;
+    return tokens.every((t) => sourceTokens.has(t));
   }
 
-  function countPhraseHits(phrases, sourceText) {
-    const norm = normalizeText(sourceText);
-    let hits = 0;
-    for (const phrase of phrases) {
-      if (norm.includes(phrase)) hits++;
-    }
-    return hits;
-  }
-
-  function minimumOverlapRequired(signalTokens) {
-    return signalTokens.length <= 2 ? 1 : 2;
+  function operationAligned(opName, sourceText) {
+    if (!opName) return false;
+    const pattern = OP_PATTERNS.find((p) => p.name === opName);
+    return pattern ? pattern.regex.test(sourceText || '') : false;
   }
 
   function splitSacCodes(raw) {
@@ -125,247 +102,173 @@
     return null;
   }
 
-  function searchApl(db, segment) {
-    const signalTokens = extractSignalTokens(segment);
-    const phrases = buildSignalPhrases(segment);
-    const rows = Array.isArray(db.apl) ? db.apl : [];
-    const scored = rows.map((row) => {
-      const text = `${row.access || ''} ${row.description || ''}`;
-      return {
-        ...row,
-        overlap: countOverlap(signalTokens, text),
-        phraseHits: countPhraseHits(phrases, text)
-      };
-    }).filter((r) => r.overlap > 0 || r.phraseHits > 0)
-      .sort((a, b) => (b.phraseHits + b.overlap) - (a.phraseHits + a.overlap));
-    return scored[0] || null;
-  }
-
-  function createPiece(segment, op, sourceName, ref, overlap, phraseHits, opAligned, authoritative) {
-    return {
-      segment,
-      op,
-      overlap,
-      phraseHits,
-      opAligned,
-      authoritative,
-      source: { source: sourceName, ref }
-    };
-  }
-
-  function addCandidate(map, code, definition, piece) {
-    const prev = map.get(code) || {
-      code,
-      definition: definition || '',
-      evidence: [],
-      authoritativeHits: 0,
-      pieces: []
-    };
-    prev.evidence.push(piece);
-    prev.pieces.push(piece);
-    if (piece.authoritative) prev.authoritativeHits += 1;
-    if (!prev.definition && definition) prev.definition = definition;
-    map.set(code, prev);
-  }
-
-  function sourceMatch(segment, op, sourceText, requireOperation) {
-    const signalTokens = extractSignalTokens(segment);
-    const phrases = buildSignalPhrases(segment);
-    const overlap = countOverlap(signalTokens, sourceText);
-    const phraseHits = countPhraseHits(phrases, sourceText);
-    const minOverlap = minimumOverlapRequired(signalTokens);
-    const opAligned = requireOperation ? (op === 'analyze' ? true : containsOperation(sourceText, op)) : true;
-    const accepted = opAligned && (overlap >= minOverlap || phraseHits > 0);
-    return { accepted, overlap, phraseHits, minOverlap, opAligned };
-  }
-
-  function searchCandidatesForSegment(db, segment) {
+  function exactRowsForSegment(db, segment) {
     const op = detectOperation(segment);
+    const tokens = signalTokens(segment);
     const accessLike = detectAccessLike(segment);
-    const candidateMap = new Map();
-    const looseEvidence = [];
 
-    for (const def of (db.definitions || [])) {
-      const match = sourceMatch(segment, op, `${def.code} ${def.description}`, false);
-      if (!match.accepted) continue;
-      const piece = createPiece(segment, op, 'SAC definition', def.code, match.overlap, match.phraseHits, true, false);
-      addCandidate(candidateMap, def.code, def.description, piece);
+    if (!op || !tokens.length) {
+      return {
+        segment,
+        op: op || 'none',
+        accessLike,
+        exactMatches: [],
+        decision: 'NO_MATCH',
+        reason: 'No explicit operation or no searchable signal tokens were found in this segment.'
+      };
     }
+
+    const matches = [];
 
     for (const row of (db.mpd || [])) {
       const text = `${row.description || ''} ${row.access_notes || ''} ${row.access || ''}`;
-      const match = sourceMatch(segment, op, text, true);
-      if (!match.accepted) continue;
-      const codes = splitSacCodes(row.sac);
-      if (!codes.length) continue;
-      for (const code of codes) {
-        const def = getDefinitionByCode(db, code);
-        const piece = createPiece(segment, op, 'A320 MPD', `Row ${row.row}`, match.overlap, match.phraseHits, match.opAligned, true);
-        addCandidate(candidateMap, code, def ? def.description : '', piece);
+      if (!operationAligned(op, text)) continue;
+      if (!allTokensPresent(tokens, text)) continue;
+      for (const code of splitSacCodes(row.sac)) {
+        if (!code) continue;
+        matches.push({
+          code,
+          source: 'A320 MPD',
+          ref: `Row ${row.row}`,
+          text: row.description || text,
+          op,
+          tokens
+        });
       }
     }
 
     for (const row of (db.sheet1 || [])) {
       const text = `${row.cri || ''} ${row.description || ''} ${row.planning_comments || ''} ${row.access_note || ''}`;
-      const match = sourceMatch(segment, op, text, true);
-      if (!match.accepted) continue;
-      const codes = splitSacCodes(row.sac_code);
-      if (!codes.length) {
-        looseEvidence.push({ source: 'Sheet1', ref: `Row ${row.row}`, text: row.description, overlap: match.overlap, phraseHits: match.phraseHits });
-        continue;
-      }
-      for (const code of codes) {
-        const def = getDefinitionByCode(db, code);
-        const piece = createPiece(segment, op, 'Sheet1', `Row ${row.row}`, match.overlap, match.phraseHits, match.opAligned, true);
-        addCandidate(candidateMap, code, def ? def.description : '', piece);
+      if (!operationAligned(op, text)) continue;
+      if (!allTokensPresent(tokens, text)) continue;
+      for (const code of splitSacCodes(row.sac_code)) {
+        if (!code) continue;
+        matches.push({
+          code,
+          source: 'Sheet1',
+          ref: `Row ${row.row}`,
+          text: row.description || text,
+          op,
+          tokens
+        });
       }
     }
 
-    const candidates = [...candidateMap.values()].map((item) => {
-      const score = item.pieces.reduce((sum, p) => sum + (p.authoritative ? 100 : 25) + (p.overlap * 10) + (p.phraseHits * 20), 0);
-      return {
-        code: item.code,
-        score,
-        definition: item.definition,
-        authoritativeHits: item.authoritativeHits,
-        evidence: item.evidence.slice(0, 4),
-        pieces: item.pieces.sort((a, b) => {
-          const sa = (a.authoritative ? 100 : 0) + a.overlap + a.phraseHits;
-          const sb = (b.authoritative ? 100 : 0) + b.overlap + b.phraseHits;
-          return sb - sa;
-        })
-      };
-    }).sort((a, b) => b.score - a.score);
+    const uniqueCodes = [...new Set(matches.map((m) => m.code))];
 
-    const apl = accessLike ? searchApl(db, segment) : null;
-    const top = candidates[0] || null;
-    const type = accessLike && (!top || top.authoritativeHits === 0) ? 'access' : 'core';
+    if (!matches.length) {
+      return {
+        segment,
+        op,
+        accessLike,
+        exactMatches: [],
+        decision: 'NO_MATCH',
+        reason: 'No exact authoritative row was found for all detected tokens and operation.'
+      };
+    }
+
+    if (uniqueCodes.length !== 1) {
+      return {
+        segment,
+        op,
+        accessLike,
+        exactMatches: matches,
+        decision: 'MULTIPLE',
+        reason: 'More than one exact SAC code matched this segment. No automatic SAC is allowed.'
+      };
+    }
 
     return {
       segment,
       op,
       accessLike,
-      apl,
-      type,
-      candidates,
-      looseEvidence: looseEvidence.slice(0, 3)
+      exactMatches: matches,
+      decision: 'EXACT',
+      reason: `Exact operation match found for ${uniqueCodes[0]}.`
     };
-  }
-
-  function isValidatedCandidate(candidate) {
-    if (!candidate || candidate.authoritativeHits <= 0) return false;
-    const topPiece = candidate.pieces[0];
-    return Boolean(topPiece && topPiece.opAligned === true && (topPiece.overlap >= 1 || topPiece.phraseHits >= 1));
-  }
-
-  function buildOverallResult(db, segmentResults, combinedText) {
-    const aggregate = new Map();
-
-    for (const seg of segmentResults) {
-      for (const cand of seg.candidates.slice(0, 8)) {
-        const prev = aggregate.get(cand.code) || {
-          code: cand.code,
-          score: 0,
-          definition: cand.definition,
-          relation: getSACDBByCode(db, cand.code),
-          pieces: [],
-          authoritativeHits: 0
-        };
-        prev.score += cand.score;
-        prev.authoritativeHits += cand.authoritativeHits || 0;
-        prev.pieces.push(...cand.pieces.slice(0, 3));
-        if (!prev.definition && cand.definition) prev.definition = cand.definition;
-        aggregate.set(cand.code, prev);
-      }
-    }
-
-    const ranked = [...aggregate.values()]
-      .map((item) => ({ ...item, pieces: item.pieces.slice(0, 5) }))
-      .sort((a, b) => b.score - a.score);
-
-    const validated = ranked.filter(isValidatedCandidate);
-    let best = null;
-    let decision = 'NO_SAC';
-    let decisionText = 'No validated SAC match was found in the restricted data.';
-
-    if (validated.length === 1) {
-      best = validated[0];
-      decision = 'MATCH';
-      decisionText = `Validated SAC match: ${best.code}`;
-    } else if (validated.length > 1) {
-      const top = validated[0];
-      const second = validated[1];
-      if (!second || top.score >= second.score + 35) {
-        best = top;
-        decision = 'MATCH';
-        decisionText = `Validated SAC match: ${best.code}`;
-      } else {
-        decision = 'AMBIGUOUS';
-        decisionText = 'More than one validated SAC candidate exists. No SAC is released automatically.';
-      }
-    }
-
-    const topCoreSegment = best
-      ? segmentResults.find((s) => s.type === 'core' && s.candidates[0] && s.candidates[0].code === best.code) || null
-      : null;
-
-    const accessSegments = segmentResults.filter((s) => s.type === 'access' || (s.accessLike && s.apl));
-    const accessText = accessSegments.length
-      ? accessSegments.map((s, i) => `Access ${i + 1}: ${s.apl ? `${s.apl.description} (Row ${s.apl.row})` : s.segment}`).join(' | ')
-      : 'No clear access-only wording detected.';
-
-    return {
-      best,
-      ranked,
-      validated,
-      decision,
-      decisionText,
-      topCoreSegment,
-      accessText,
-      accessHours: null,
-      coreHours: null,
-      definitionText: best ? (getDefinitionByCode(db, best.code)?.description || best.definition || 'No exact definition row found.') : decisionText,
-      relationText: best && best.relation
-        ? `Mother: ${best.relation.mother} • Children: ${(best.relation.children || []).slice(0, 6).join(', ')}`
-        : 'No SACDB relation found.',
-      combinedText,
-    };
-  }
-
-  function confidenceLabel(score) {
-    if (score >= 260) return 'Validated';
-    if (score >= 200) return 'Candidate';
-    return 'Weak';
-  }
-
-  function confidenceClass(score) {
-    if (score >= 260) return 'pill-high';
-    if (score >= 200) return 'pill-medium';
-    return 'pill-low';
   }
 
   function analyzeText(db, text) {
-    const segments = splitTaskCard(text);
-    const segmentResults = segments.map((seg) => searchCandidatesForSegment(db, seg));
-    const final = buildOverallResult(db, segmentResults, text);
-    return { segments: segmentResults, final };
+    const segments = splitTaskCard(text).map((segment) => exactRowsForSegment(db, segment));
+
+    const exactCodes = [];
+    for (const seg of segments) {
+      if (seg.decision === 'EXACT') {
+        for (const match of seg.exactMatches) exactCodes.push(match.code);
+      }
+    }
+
+    const uniqueExactCodes = [...new Set(exactCodes)];
+    let decision = 'NO_SAC';
+    let best = null;
+    let decisionText = 'No exact SAC match was found.';
+
+    if (segments.some((s) => s.decision === 'MULTIPLE')) {
+      decision = 'NO_SAC';
+      decisionText = 'Multiple exact SAC codes were found in at least one segment. No automatic SAC is allowed.';
+    } else if (uniqueExactCodes.length === 1) {
+      const code = uniqueExactCodes[0];
+      const def = getDefinitionByCode(db, code);
+      const relation = getSACDBByCode(db, code);
+      const sourceSegment = segments.find((s) => s.decision === 'EXACT' && s.exactMatches.some((m) => m.code === code));
+      const sourceMatch = sourceSegment ? sourceSegment.exactMatches.find((m) => m.code === code) : null;
+      best = {
+        code,
+        definition: def ? def.description : '',
+        relation,
+        sourceMatch
+      };
+      decision = 'MATCH';
+      decisionText = `Exact SAC match found: ${code}`;
+    }
+
+    const ranked = uniqueExactCodes.map((code) => {
+      const def = getDefinitionByCode(db, code);
+      const firstSource = segments.flatMap((s) => s.exactMatches).find((m) => m.code === code) || null;
+      return {
+        code,
+        definition: def ? def.description : '',
+        exact: true,
+        source: firstSource
+      };
+    });
+
+    return {
+      segments,
+      final: {
+        decision,
+        decisionText,
+        best,
+        ranked,
+        topCoreSegment: best ? segments.find((s) => s.exactMatches.some((m) => m.code === best.code)) || null : null,
+        accessText: segments.filter((s) => s.accessLike).map((s, i) => `Access ${i + 1}: ${s.segment}`).join(' | ') || 'No clear access-only wording detected.',
+        definitionText: best ? (best.definition || 'No exact definition row found.') : decisionText,
+        relationText: best && best.relation ? `Mother: ${best.relation.mother} • Children: ${(best.relation.children || []).slice(0, 6).join(', ')}` : 'No SACDB relation found.',
+        coreHours: null,
+        accessHours: null,
+        combinedText: text
+      }
+    };
+  }
+
+  function confidenceLabel() {
+    return 'Exact';
+  }
+
+  function confidenceClass() {
+    return 'pill-high';
   }
 
   return {
     normalizeText,
     tokenize,
-    extractSignalTokens,
-    buildSignalPhrases,
     splitTaskCard,
     detectOperation,
-    detectOperations,
     detectAccessLike,
-    confidenceLabel,
-    confidenceClass,
     getDefinitionByCode,
     getSACDBByCode,
-    searchCandidatesForSegment,
-    buildOverallResult,
     analyzeText,
+    confidenceLabel,
+    confidenceClass
   };
 });
