@@ -227,7 +227,7 @@ async function pingOpenAI() {
   const data = await postResponsesApi({
     model,
     input: 'Reply with exactly OK.',
-    max_output_tokens: 10
+    max_output_tokens: 16
   });
   return {
     ok: true,
