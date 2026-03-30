@@ -74,11 +74,18 @@ function getRestrictedSources() {
   return { definitions, mpd, htmlRaw };
 }
 
+function getOpenAIConfig() {
+  return {
+    apiKey: String(process.env.OPENAI_API_KEY || '').trim(),
+    model: process.env.OPENAI_MODEL || 'gpt-5-nano',
+    baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+  };
+}
+
 function extractResponseText(data) {
   if (typeof data?.output_text === 'string' && data.output_text.trim()) {
     return data.output_text;
   }
-
   if (Array.isArray(data?.output)) {
     const parts = [];
     for (const item of data.output) {
@@ -92,19 +99,34 @@ function extractResponseText(data) {
     }
     if (parts.length) return parts.join('\n');
   }
-
   return '';
 }
 
-async function callOpenAI(taskText, localResult) {
-  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
-  const model = process.env.OPENAI_MODEL || 'gpt-5-nano';
-  const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-
+async function postResponsesApi(payload) {
+  const { apiKey, baseUrl } = getOpenAIConfig();
   if (!apiKey) {
     throw new Error('OPENAI_API_KEY is missing in the runtime environment.');
   }
 
+  const response = await fetch(`${baseUrl}/responses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const txt = await response.text();
+    throw new Error(`OpenAI error: ${response.status} ${txt}`);
+  }
+
+  return await response.json();
+}
+
+async function callOpenAI(taskText, localResult) {
+  const { model } = getOpenAIConfig();
   const { definitions, mpd, htmlRaw } = getRestrictedSources();
 
   const prompt = [
@@ -140,14 +162,8 @@ async function callOpenAI(taskText, localResult) {
     required: ['recommendation', 'why', 'checks', 'codes', 'trace'],
     properties: {
       recommendation: { type: 'string' },
-      why: {
-        type: 'array',
-        items: { type: 'string' }
-      },
-      checks: {
-        type: 'array',
-        items: { type: 'string' }
-      },
+      why: { type: 'array', items: { type: 'string' } },
+      checks: { type: 'array', items: { type: 'string' } },
       codes: {
         type: 'array',
         items: {
@@ -161,67 +177,39 @@ async function callOpenAI(taskText, localResult) {
           }
         }
       },
-      trace: {
-        type: 'array',
-        items: { type: 'string' }
-      }
+      trace: { type: 'array', items: { type: 'string' } }
     }
   };
 
-  const response = await fetch(`${baseUrl}/responses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: 'system',
-          content: [
-            {
-              type: 'input_text',
-              text: 'You are a grounded aircraft maintenance assistant. Return structured JSON only and stay strictly inside the supplied sources.'
-            }
-          ]
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: prompt
-            }
-          ]
-        }
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'sac_response',
-          strict: true,
-          schema
-        }
+  const data = await postResponsesApi({
+    model,
+    input: [
+      {
+        role: 'system',
+        content: [{ type: 'input_text', text: 'You are a grounded aircraft maintenance assistant. Return structured JSON only and stay strictly inside the supplied sources.' }]
+      },
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: prompt }]
       }
-    })
+    ],
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'sac_response',
+        strict: true,
+        schema
+      }
+    }
   });
 
-  if (!response.ok) {
-    const txt = await response.text();
-    throw new Error(`OpenAI error: ${response.status} ${txt}`);
-  }
-
-  const data = await response.json();
   const content = extractResponseText(data);
   if (!content) {
     throw new Error('No model response content');
   }
 
   const parsed = JSON.parse(content);
-  const recommendation = typeof parsed.recommendation === 'string'
-    ? parsed.recommendation
-    : 'No recommendation returned.';
+  const recommendation = typeof parsed.recommendation === 'string' ? parsed.recommendation : 'No recommendation returned.';
 
   return {
     mode: 'live_ai',
@@ -231,6 +219,22 @@ async function callOpenAI(taskText, localResult) {
     checks: Array.isArray(parsed.checks) ? parsed.checks : [],
     codes: Array.isArray(parsed.codes) ? parsed.codes : [],
     trace: Array.isArray(parsed.trace) ? parsed.trace : []
+  };
+}
+
+async function pingOpenAI() {
+  const { model } = getOpenAIConfig();
+  const data = await postResponsesApi({
+    model,
+    input: 'Reply with exactly OK.',
+    max_output_tokens: 10
+  });
+  return {
+    ok: true,
+    model,
+    text: extractResponseText(data),
+    usage: data.usage || null,
+    response_id: data.id || null
   };
 }
 
@@ -249,10 +253,11 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && urlPath === '/api/health') {
     const { definitions, mpd, htmlRaw } = getRestrictedSources();
+    const cfg = getOpenAIConfig();
     return sendJson(res, 200, {
       ok: true,
-      hasKey: Boolean(String(process.env.OPENAI_API_KEY || '').trim()),
-      model: process.env.OPENAI_MODEL || 'gpt-5-nano',
+      hasKey: Boolean(cfg.apiKey),
+      model: cfg.model,
       apiStyle: 'responses',
       sources: {
         definitions: definitions.length,
@@ -260,6 +265,20 @@ const server = http.createServer(async (req, res) => {
         htmlLength: htmlRaw.length
       }
     });
+  }
+
+  if (req.method === 'GET' && urlPath === '/api/test-openai') {
+    try {
+      const result = await pingOpenAI();
+      return sendJson(res, 200, result);
+    } catch (error) {
+      const msg = String(error?.message || error);
+      return sendJson(res, 500, {
+        ok: false,
+        error: 'OpenAI ping failed.',
+        detail: msg
+      });
+    }
   }
 
   if (req.method === 'GET' && urlPath === '/db.json') {
