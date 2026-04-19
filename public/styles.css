@@ -303,6 +303,35 @@ textarea:focus {
   line-height: 1.2;
 }
 
+.data-source-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.data-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.data-source-box strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.data-source-box p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -558,7 +587,8 @@ textarea.large {
   .topbar,
   .section-head,
   .candidate-top,
-  .operation-top {
+  .operation-top,
+  .data-source-box {
     flex-direction: column;
     align-items: stretch;
   }
