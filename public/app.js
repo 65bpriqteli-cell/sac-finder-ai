@@ -90,15 +90,22 @@ function sourceSummary(sources) {
   return `${definitions} definitions / ${mpd} MPD rows`;
 }
 
+function modelBudgetSummary(health) {
+  const maxTokens = Number.isFinite(health?.maxOutputTokens) ? `max ${health.maxOutputTokens}` : 'max default';
+  const effort = health?.reasoningEffort ? `effort ${health.reasoningEffort}` : 'effort default';
+  return `${health.model} / ${effort} / ${maxTokens}`;
+}
+
 async function refreshApiStatus(throwOnError = false) {
   try {
     const health = await fetchJson('/api/health');
     const sources = sourceSummary(health.sources);
     const rules = Number.isFinite(health.rules) ? `${health.rules} rules` : 'rules loaded';
+    const modelBudget = modelBudgetSummary(health);
     if (health.hasKey) {
-      setApiStatus('OpenAI ready', 'ready', `${health.model} / ${sources} / ${rules}`);
+      setApiStatus('OpenAI ready', 'ready', `${modelBudget} / ${sources} / ${rules}`);
     } else {
-      setApiStatus('API key missing', 'warning', `${sources} / add OPENAI_API_KEY on the server`);
+      setApiStatus('API key missing', 'warning', `${modelBudget} / ${sources} / add OPENAI_API_KEY on the server`);
     }
     return health;
   } catch (error) {
