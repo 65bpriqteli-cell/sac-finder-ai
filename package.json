@@ -5,7 +5,8 @@
   "description": "Restricted SAC Finder using SAC Definition and A320 MPD with optional live AI",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js"
   },
   "engines": {
     "node": ">=18"
