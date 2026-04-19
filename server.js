@@ -7,6 +7,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const INDEX_PATH = path.join(PUBLIC_DIR, 'index.html');
 const DB_PATH = path.join(PUBLIC_DIR, 'db.json');
 const ENV_PATH = path.join(__dirname, '.env');
+const MAX_BODY_BYTES = 3 * 1024 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -21,8 +22,26 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8'
 };
 
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin'
+};
+
+const SAC_SYSTEM_RULES = [
+  'Use only the supplied SAC Definition rows and A320 MPD rows as evidence.',
+  'Never invent SAC codes, labor hours, rows, references, or maintenance facts.',
+  'Release a SAC code only when the task text and supplied rows support it explicitly.',
+  'When evidence is missing, conflicting, or too broad, return status NO_SAC or REVIEW instead of guessing.',
+  'Separate core work from access-only work before recommending a bundle.',
+  'Treat localResult as a retrieval helper only; verify every released code against supplied source rows.',
+  'Prefer exact row evidence over semantic similarity. Similar wording is not enough by itself.',
+  'Do not use percentages as confidence. Use high, medium, or low with a short reason.',
+  'Every recommended code must include an evidence reference and a note explaining why it is included.',
+  'Return JSON only. No markdown, no prose outside the JSON object.'
+];
+
 function send(res, status, body, type = 'text/plain; charset=utf-8') {
-  res.writeHead(status, { 'Content-Type': type });
+  res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': type });
   res.end(body);
 }
 
@@ -76,7 +95,7 @@ async function readBody(req) {
     let body = '';
     req.on('data', chunk => {
       body += chunk;
-      if (body.length > 3 * 1024 * 1024) {
+      if (body.length > MAX_BODY_BYTES) {
         reject(new Error('Request body too large'));
         req.destroy();
       }
@@ -96,8 +115,7 @@ function getRestrictedSources() {
   const db = readJsonFileSafe(DB_PATH, {}) || {};
   const definitions = Array.isArray(db.definitions) ? db.definitions : [];
   const mpd = Array.isArray(db.mpd) ? db.mpd : [];
-  const htmlRaw = readTextFileSafe(INDEX_PATH, '');
-  return { definitions, mpd, htmlRaw };
+  return { definitions, mpd };
 }
 
 function getOpenAIConfig() {
@@ -141,7 +159,7 @@ async function postResponsesApi(payload) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
+      Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify(payload)
   });
@@ -154,42 +172,14 @@ async function postResponsesApi(payload) {
   return await response.json();
 }
 
-async function callOpenAI(taskText, localResult) {
-  const { model } = getOpenAIConfig();
-  const { definitions, mpd, htmlRaw } = getRestrictedSources();
-
-  const prompt = [
-    'You are an aircraft maintenance planning copilot helping choose SAC codes.',
-    'Use ONLY these sources:',
-    '1) SAC Definition from db.json',
-    '2) A320 MPD from db.json',
-    '3) The FULL RAW HTML from public/index.html',
-    'If localResult is present, treat it only as a helper summary, not as a primary source.',
-    'Do not invent evidence outside these sources.',
-    'Do not omit or truncate source content yourself; work only from what is provided.',
-    'Return JSON only with this exact shape.',
-    '',
-    'TASK TEXT:',
-    taskText,
-    '',
-    'LOCAL RESULT HELPER (optional):',
-    JSON.stringify(localResult || null, null, 2),
-    '',
-    'SAC DEFINITION SOURCE:',
-    JSON.stringify(definitions, null, 2),
-    '',
-    'A320 MPD SOURCE:',
-    JSON.stringify(mpd, null, 2),
-    '',
-    'FULL RAW HTML SOURCE:',
-    htmlRaw
-  ].join('\n');
-
-  const schema = {
+function buildSacSchema() {
+  return {
     type: 'object',
     additionalProperties: false,
-    required: ['recommendation', 'why', 'checks', 'codes', 'trace'],
+    required: ['status', 'confidence', 'recommendation', 'why', 'checks', 'codes', 'trace'],
     properties: {
+      status: { type: 'string', enum: ['MATCH', 'REVIEW', 'NO_SAC'] },
+      confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
       recommendation: { type: 'string' },
       why: { type: 'array', items: { type: 'string' } },
       checks: { type: 'array', items: { type: 'string' } },
@@ -198,24 +188,87 @@ async function callOpenAI(taskText, localResult) {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['code', 'role', 'note'],
+          required: ['code', 'role', 'note', 'evidence_ref'],
           properties: {
             code: { type: 'string' },
             role: { type: 'string' },
-            note: { type: 'string' }
+            note: { type: 'string' },
+            evidence_ref: { type: 'string' }
           }
         }
       },
       trace: { type: 'array', items: { type: 'string' } }
     }
   };
+}
+
+function buildPlannerPrompt(taskText, localResult, sources) {
+  return [
+    'MISSION',
+    'Choose SAC code guidance for the supplied aircraft maintenance task.',
+    '',
+    'HARD OPERATING RULES',
+    ...SAC_SYSTEM_RULES.map((rule, index) => `${index + 1}. ${rule}`),
+    '',
+    'DECISION CONTRACT',
+    '- MATCH: one or more SAC codes are explicitly supported by supplied source rows.',
+    '- REVIEW: evidence exists, but a planner must resolve ambiguity before release.',
+    '- NO_SAC: supplied sources do not support a code release.',
+    '',
+    'TASK TEXT',
+    taskText,
+    '',
+    'LOCAL RETRIEVAL HELPER',
+    JSON.stringify(localResult || null, null, 2),
+    '',
+    'SAC DEFINITIONS SOURCE',
+    JSON.stringify(sources.definitions, null, 2),
+    '',
+    'A320 MPD SOURCE',
+    JSON.stringify(sources.mpd, null, 2)
+  ].join('\n');
+}
+
+function normalizeAiResult(parsed, rawData, model) {
+  const status = ['MATCH', 'REVIEW', 'NO_SAC'].includes(parsed?.status) ? parsed.status : 'REVIEW';
+  const confidence = ['high', 'medium', 'low'].includes(parsed?.confidence) ? parsed.confidence : 'low';
+  const recommendation = typeof parsed?.recommendation === 'string' ? parsed.recommendation : 'No recommendation returned.';
+
+  return {
+    mode: 'live_ai',
+    model,
+    status,
+    confidence,
+    answer: recommendation,
+    recommendation,
+    why: Array.isArray(parsed?.why) ? parsed.why.map(String) : [],
+    checks: Array.isArray(parsed?.checks) ? parsed.checks.map(String) : [],
+    codes: Array.isArray(parsed?.codes) ? parsed.codes.map((item) => ({
+      code: String(item?.code || ''),
+      role: String(item?.role || ''),
+      note: String(item?.note || ''),
+      evidence_ref: String(item?.evidence_ref || '')
+    })).filter((item) => item.code) : [],
+    trace: Array.isArray(parsed?.trace) ? parsed.trace.map(String) : [],
+    usage: rawData.usage || null,
+    response_id: rawData.id || null
+  };
+}
+
+async function callOpenAI(taskText, localResult) {
+  const { model } = getOpenAIConfig();
+  const sources = getRestrictedSources();
+  const prompt = buildPlannerPrompt(taskText, localResult, sources);
 
   const data = await postResponsesApi({
     model,
     input: [
       {
         role: 'system',
-        content: [{ type: 'input_text', text: 'You are a grounded aircraft maintenance assistant. Return structured JSON only and stay strictly inside the supplied sources.' }]
+        content: [{
+          type: 'input_text',
+          text: 'You are a strict Lufthansa-Technik SAC planning assistant. Follow the hard operating rules exactly and return only valid JSON.'
+        }]
       },
       {
         role: 'user',
@@ -227,9 +280,10 @@ async function callOpenAI(taskText, localResult) {
         type: 'json_schema',
         name: 'sac_response',
         strict: true,
-        schema
+        schema: buildSacSchema()
       }
-    }
+    },
+    max_output_tokens: 1500
   });
 
   const content = extractResponseText(data);
@@ -237,21 +291,14 @@ async function callOpenAI(taskText, localResult) {
     throw new Error('No model response content');
   }
 
-  const parsed = JSON.parse(content);
-  const recommendation = typeof parsed.recommendation === 'string' ? parsed.recommendation : 'No recommendation returned.';
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error('OpenAI returned invalid JSON content.');
+  }
 
-  return {
-    mode: 'live_ai',
-    model,
-    answer: recommendation,
-    recommendation,
-    why: Array.isArray(parsed.why) ? parsed.why : [],
-    checks: Array.isArray(parsed.checks) ? parsed.checks : [],
-    codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-    trace: Array.isArray(parsed.trace) ? parsed.trace : [],
-    usage: data.usage || null,
-    response_id: data.id || null
-  };
+  return normalizeAiResult(parsed, data, model);
 }
 
 async function pingOpenAI() {
@@ -280,17 +327,45 @@ function serveFile(res, filePath) {
   }
 }
 
+function handleOpenAIError(res, error) {
+  const msg = String(error?.message || error);
+  if (msg.includes('429')) {
+    return sendJson(res, 429, {
+      error: 'OpenAI returned a rate limit or quota error. Check project billing, model access, or retry later.',
+      detail: msg
+    });
+  }
+  if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
+    return sendJson(res, 401, {
+      error: 'The OpenAI API key was rejected by OpenAI.',
+      detail: msg
+    });
+  }
+  if (msg.includes('404') && msg.toLowerCase().includes('model')) {
+    return sendJson(res, 502, {
+      error: 'The configured OpenAI model was not found or is not available to this project.',
+      detail: msg
+    });
+  }
+  return sendJson(res, 500, {
+    error: 'OpenAI request failed.',
+    detail: msg
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
 
   if (req.method === 'GET' && urlPath === '/api/health') {
-    const { definitions, mpd, htmlRaw } = getRestrictedSources();
+    const { definitions, mpd } = getRestrictedSources();
     const cfg = getOpenAIConfig();
+    const htmlRaw = readTextFileSafe(INDEX_PATH, '');
     return sendJson(res, 200, {
       ok: true,
       hasKey: Boolean(cfg.apiKey),
       model: cfg.model,
       apiStyle: 'responses',
+      rules: SAC_SYSTEM_RULES.length,
       sources: {
         definitions: definitions.length,
         mpd: mpd.length,
@@ -334,29 +409,7 @@ const server = http.createServer(async (req, res) => {
       const result = await callOpenAI(taskText, localResult);
       return sendJson(res, 200, result);
     } catch (error) {
-      const msg = String(error?.message || error);
-      if (msg.includes('429')) {
-        return sendJson(res, 429, {
-          error: 'OpenAI returned a rate limit or quota error. Check the project billing, model access, or retry later.',
-          detail: msg
-        });
-      }
-      if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
-        return sendJson(res, 401, {
-          error: 'The OpenAI API key was rejected by OpenAI.',
-          detail: msg
-        });
-      }
-      if (msg.includes('404') && msg.toLowerCase().includes('model')) {
-        return sendJson(res, 502, {
-          error: 'The configured OpenAI model was not found or is not available to this project.',
-          detail: msg
-        });
-      }
-      return sendJson(res, 500, {
-        error: 'OpenAI request failed.',
-        detail: msg
-      });
+      return handleOpenAIError(res, error);
     }
   }
 
