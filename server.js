@@ -6,6 +6,7 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const INDEX_PATH = path.join(PUBLIC_DIR, 'index.html');
 const DB_PATH = path.join(PUBLIC_DIR, 'db.json');
+const ENV_PATH = path.join(__dirname, '.env');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -44,6 +45,31 @@ function readTextFileSafe(filePath, fallback = '') {
     return fallback;
   }
 }
+
+function loadDotEnv(filePath) {
+  const raw = readTextFileSafe(filePath, '');
+  if (!raw) return;
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const eqIndex = trimmed.indexOf('=');
+    if (eqIndex === -1) continue;
+
+    const key = trimmed.slice(0, eqIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (Object.prototype.hasOwnProperty.call(process.env, key)) continue;
+
+    let value = trimmed.slice(eqIndex + 1).trim();
+    const quoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
+    if (quoted) value = value.slice(1, -1);
+
+    process.env[key] = value;
+  }
+}
+
+loadDotEnv(ENV_PATH);
 
 async function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -93,6 +119,9 @@ function extractResponseText(data) {
         for (const content of item.content) {
           if (content?.type === 'output_text' && typeof content.text === 'string') {
             parts.push(content.text);
+          }
+          if (content?.type === 'refusal' && typeof content.refusal === 'string') {
+            throw new Error(`OpenAI refusal: ${content.refusal}`);
           }
         }
       }
@@ -213,12 +242,15 @@ async function callOpenAI(taskText, localResult) {
 
   return {
     mode: 'live_ai',
+    model,
     answer: recommendation,
     recommendation,
     why: Array.isArray(parsed.why) ? parsed.why : [],
     checks: Array.isArray(parsed.checks) ? parsed.checks : [],
     codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-    trace: Array.isArray(parsed.trace) ? parsed.trace : []
+    trace: Array.isArray(parsed.trace) ? parsed.trace : [],
+    usage: data.usage || null,
+    response_id: data.id || null
   };
 }
 
@@ -312,6 +344,12 @@ const server = http.createServer(async (req, res) => {
       if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
         return sendJson(res, 401, {
           error: 'The OpenAI API key was rejected by OpenAI.',
+          detail: msg
+        });
+      }
+      if (msg.includes('404') && msg.toLowerCase().includes('model')) {
+        return sendJson(res, 502, {
+          error: 'The configured OpenAI model was not found or is not available to this project.',
           detail: msg
         });
       }
