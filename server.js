@@ -8,6 +8,7 @@ const INDEX_PATH = path.join(PUBLIC_DIR, 'index.html');
 const DB_PATH = path.join(PUBLIC_DIR, 'db.json');
 const ENV_PATH = path.join(__dirname, '.env');
 const MAX_BODY_BYTES = 3 * 1024 * 1024;
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -118,12 +119,24 @@ function getRestrictedSources() {
   return { definitions, mpd };
 }
 
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function getOpenAIConfig() {
+  const model = process.env.OPENAI_MODEL || 'gpt-5-nano';
   return {
     apiKey: String(process.env.OPENAI_API_KEY || '').trim(),
-    model: process.env.OPENAI_MODEL || 'gpt-5-nano',
-    baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
+    model,
+    baseUrl: (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''),
+    maxOutputTokens: parsePositiveInt(process.env.OPENAI_MAX_OUTPUT_TOKENS, DEFAULT_MAX_OUTPUT_TOKENS),
+    reasoningEffort: process.env.OPENAI_REASONING_EFFORT || 'minimal'
   };
+}
+
+function supportsReasoning(model) {
+  return /^(gpt-5|o[134]|o\d|o-series)/i.test(model || '');
 }
 
 function extractResponseText(data) {
@@ -135,8 +148,11 @@ function extractResponseText(data) {
     for (const item of data.output) {
       if (Array.isArray(item?.content)) {
         for (const content of item.content) {
-          if (content?.type === 'output_text' && typeof content.text === 'string') {
+          if ((content?.type === 'output_text' || content?.type === 'text') && typeof content.text === 'string') {
             parts.push(content.text);
+          }
+          if (typeof content === 'string') {
+            parts.push(content);
           }
           if (content?.type === 'refusal' && typeof content.refusal === 'string') {
             throw new Error(`OpenAI refusal: ${content.refusal}`);
@@ -147,6 +163,29 @@ function extractResponseText(data) {
     if (parts.length) return parts.join('\n');
   }
   return '';
+}
+
+function usageSummary(usage) {
+  if (!usage) return 'usage unavailable';
+  const details = usage.output_tokens_details || {};
+  const parts = [];
+  if (typeof usage.input_tokens === 'number') parts.push(`input=${usage.input_tokens}`);
+  if (typeof usage.output_tokens === 'number') parts.push(`output=${usage.output_tokens}`);
+  if (typeof details.reasoning_tokens === 'number') parts.push(`reasoning=${details.reasoning_tokens}`);
+  if (typeof usage.total_tokens === 'number') parts.push(`total=${usage.total_tokens}`);
+  return parts.join(', ') || 'usage unavailable';
+}
+
+function assertCompleteResponse(data, content) {
+  if (content) return;
+
+  const reason = data?.incomplete_details?.reason;
+  if (data?.status === 'incomplete' && reason === 'max_output_tokens') {
+    throw new Error(`OpenAI ran out of max_output_tokens before producing final JSON. Increase OPENAI_MAX_OUTPUT_TOKENS or lower OPENAI_REASONING_EFFORT. ${usageSummary(data.usage)}`);
+  }
+
+  const outputTypes = Array.isArray(data?.output) ? data.output.map((item) => item?.type || 'unknown').join(', ') : 'none';
+  throw new Error(`No model response content. status=${data?.status || 'unknown'} incomplete_reason=${reason || 'none'} output_types=${outputTypes} ${usageSummary(data?.usage)}`);
 }
 
 async function postResponsesApi(payload) {
@@ -256,12 +295,11 @@ function normalizeAiResult(parsed, rawData, model) {
 }
 
 async function callOpenAI(taskText, localResult) {
-  const { model } = getOpenAIConfig();
+  const cfg = getOpenAIConfig();
   const sources = getRestrictedSources();
   const prompt = buildPlannerPrompt(taskText, localResult, sources);
-
-  const data = await postResponsesApi({
-    model,
+  const payload = {
+    model: cfg.model,
     input: [
       {
         role: 'system',
@@ -283,13 +321,16 @@ async function callOpenAI(taskText, localResult) {
         schema: buildSacSchema()
       }
     },
-    max_output_tokens: 1500
-  });
+    max_output_tokens: cfg.maxOutputTokens
+  };
 
-  const content = extractResponseText(data);
-  if (!content) {
-    throw new Error('No model response content');
+  if (supportsReasoning(cfg.model)) {
+    payload.reasoning = { effort: cfg.reasoningEffort };
   }
+
+  const data = await postResponsesApi(payload);
+  const content = extractResponseText(data);
+  assertCompleteResponse(data, content);
 
   let parsed;
   try {
@@ -298,20 +339,28 @@ async function callOpenAI(taskText, localResult) {
     throw new Error('OpenAI returned invalid JSON content.');
   }
 
-  return normalizeAiResult(parsed, data, model);
+  return normalizeAiResult(parsed, data, cfg.model);
 }
 
 async function pingOpenAI() {
-  const { model } = getOpenAIConfig();
-  const data = await postResponsesApi({
+  const { model, maxOutputTokens, reasoningEffort } = getOpenAIConfig();
+  const payload = {
     model,
     input: 'Reply with exactly OK.',
-    max_output_tokens: 16
-  });
+    max_output_tokens: 64
+  };
+  if (supportsReasoning(model)) {
+    payload.reasoning = { effort: reasoningEffort };
+  }
+  const data = await postResponsesApi(payload);
+  const text = extractResponseText(data);
+  assertCompleteResponse(data, text);
   return {
     ok: true,
     model,
-    text: extractResponseText(data),
+    maxOutputTokens,
+    reasoningEffort: supportsReasoning(model) ? reasoningEffort : 'not-applicable',
+    text,
     usage: data.usage || null,
     response_id: data.id || null
   };
@@ -347,6 +396,12 @@ function handleOpenAIError(res, error) {
       detail: msg
     });
   }
+  if (msg.includes('max_output_tokens')) {
+    return sendJson(res, 502, {
+      error: 'OpenAI used the output budget before producing final JSON.',
+      detail: msg
+    });
+  }
   return sendJson(res, 500, {
     error: 'OpenAI request failed.',
     detail: msg
@@ -365,6 +420,8 @@ const server = http.createServer(async (req, res) => {
       hasKey: Boolean(cfg.apiKey),
       model: cfg.model,
       apiStyle: 'responses',
+      maxOutputTokens: cfg.maxOutputTokens,
+      reasoningEffort: supportsReasoning(cfg.model) ? cfg.reasoningEffort : 'not-applicable',
       rules: SAC_SYSTEM_RULES.length,
       sources: {
         definitions: definitions.length,
