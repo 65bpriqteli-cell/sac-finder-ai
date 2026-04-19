@@ -347,7 +347,7 @@ async function pingOpenAI() {
   const payload = {
     model,
     input: 'Reply with exactly OK.',
-    max_output_tokens: 64
+    max_output_tokens: 256
   };
   if (supportsReasoning(model)) {
     payload.reasoning = { effort: reasoningEffort };
