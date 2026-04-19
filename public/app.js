@@ -35,6 +35,48 @@ function setMessage(text, type = 'info') {
   box.style.color = type === 'error' ? '#8a2e2e' : '#26427c';
 }
 
+async function readJsonResponse(response) {
+  const raw = await response.text();
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { error: raw };
+  }
+}
+
+async function fetchJson(url, options = {}) {
+  const headers = {
+    Accept: 'application/json',
+    ...(options.headers || {})
+  };
+  const response = await fetch(url, { ...options, headers });
+  const payload = await readJsonResponse(response);
+
+  if (!response.ok) {
+    const message = payload.error || payload.detail || `Request failed with HTTP ${response.status}`;
+    const detail = payload.detail && payload.detail !== message ? ` Detail: ${payload.detail}` : '';
+    throw new Error(`${message}${detail}`);
+  }
+
+  return payload;
+}
+
+function usageSummary(usage) {
+  if (!usage) return '';
+  const parts = [];
+  if (typeof usage.input_tokens === 'number') parts.push(`input ${usage.input_tokens}`);
+  if (typeof usage.output_tokens === 'number') parts.push(`output ${usage.output_tokens}`);
+  if (typeof usage.total_tokens === 'number') parts.push(`total ${usage.total_tokens}`);
+  return parts.join(', ');
+}
+
+function setAiButtonBusy(isBusy) {
+  const button = $('runAiBtn');
+  button.disabled = isBusy;
+  button.textContent = isBusy ? 'Calling AI...' : 'Run AI copilot';
+}
+
 function decisionMeta(result) {
   const d = result?.final?.decision || 'NO_SAC';
   if (d === 'MATCH') return { label: 'Exact match', pill: 'pill pill-high', short: 'Exact match found' };
@@ -49,19 +91,19 @@ function renderLocalResult(result) {
 
   $('bestSac').textContent = best ? best.code : 'NO SAC';
   $('bestConfidence').textContent = meta.short;
-  $('coreHours').textContent = '—';
-  $('accessHours').textContent = '—';
-  $('definitionText').textContent = result?.final?.definitionText || '—';
-  $('bestSource').textContent = best && best.sourceMatch ? `${best.sourceMatch.source} / ${best.sourceMatch.ref}` : '—';
-  $('bestMatchText').textContent = result?.final?.topCoreSegment?.segment || result?.final?.decisionText || '—';
-  $('accessText').textContent = result?.final?.accessText || '—';
+  $('coreHours').textContent = '\u2014';
+  $('accessHours').textContent = '\u2014';
+  $('definitionText').textContent = result?.final?.definitionText || '\u2014';
+  $('bestSource').textContent = best && best.sourceMatch ? `${best.sourceMatch.source} / ${best.sourceMatch.ref}` : '\u2014';
+  $('bestMatchText').textContent = result?.final?.topCoreSegment?.segment || result?.final?.decisionText || '\u2014';
+  $('accessText').textContent = result?.final?.accessText || '\u2014';
 
   const status = $('statusPill');
   status.className = meta.pill;
   status.textContent = meta.label;
 
   $('candidateList').innerHTML = (result.final.ranked || []).map((item) => {
-    const source = item.source ? `${item.source.source} / ${item.source.ref}` : '—';
+    const source = item.source ? `${item.source.source} / ${item.source.ref}` : '\u2014';
     return `
       <article class="candidate-item">
         <div class="candidate-top">
@@ -107,53 +149,72 @@ function updateStep(index, doneBefore = true) {
   });
 }
 
-function renderAiResult(data) {
-  state.aiResult = data;
-  $('aiModePill').textContent = 'Strict search';
-  $('aiRecommendation').textContent = data.recommendation || 'No recommendation.';
-  $('aiWhy').innerHTML = (data.why || []).map((item) => `<li>${item}</li>`).join('') || '<li>No reasoning returned.</li>';
-  $('aiChecks').innerHTML = (data.checks || []).map((item) => `<li>${item}</li>`).join('') || '<li>No checks returned.</li>';
-  $('aiCodes').innerHTML = (data.codes || []).map((item) => `<li><strong>${item.code}</strong>${item.role ? ` — ${item.role}` : ''}${item.note ? `<br><span class="small-muted">${item.note}</span>` : ''}</li>`).join('') || '<li>No SAC released.</li>';
-  $('aiTrace').textContent = (data.trace || []).join('\n') || 'No trace returned.';
-  updateStep(4, true);
+function renderSimpleList(id, items, emptyText) {
+  const list = $(id);
+  list.innerHTML = '';
+  const values = Array.isArray(items) ? items : [];
+  if (!values.length) {
+    const li = document.createElement('li');
+    li.textContent = emptyText;
+    list.appendChild(li);
+    return;
+  }
+  values.forEach((item) => {
+    const li = document.createElement('li');
+    li.textContent = String(item);
+    list.appendChild(li);
+  });
 }
 
-function buildStrictResult(result) {
-  const best = result?.final?.best || null;
-  const segments = result?.segments || [];
-  if (result?.final?.decision === 'MATCH' && best && best.sourceMatch) {
-    return {
-      recommendation: `Exact SAC match found: ${best.code}`,
-      why: [
-        `Detected operation: ${best.sourceMatch.op}`,
-        `Exact row found in ${best.sourceMatch.source} / ${best.sourceMatch.ref}`,
-        `Matched segment: ${best.sourceMatch.segment}`
-      ],
-      checks: [
-        'The code was released only because one exact authoritative match was found.',
-        'No percentages were used in this decision.',
-        'No alternative SAC was released.'
-      ],
-      codes: [{ code: best.code, role: 'exact match', note: best.definition || 'No definition text found.' }],
-      trace: segments.map((s, i) => `Segment ${i + 1}: ${s.decision} — ${s.segment}`)
-    };
+function renderCodeList(codes) {
+  const list = $('aiCodes');
+  list.innerHTML = '';
+  const values = Array.isArray(codes) ? codes : [];
+  if (!values.length) {
+    const li = document.createElement('li');
+    li.textContent = 'No SAC released.';
+    list.appendChild(li);
+    return;
   }
 
-  return {
-    recommendation: 'No SAC released because no single exact authoritative match was found.',
-    why: [
-      'This mode works as a strict search engine, not a suggestion engine.',
-      'If the operation is not found exactly, the result stays NO SAC.',
-      'If more than one exact code appears, no automatic SAC is allowed.'
-    ],
-    checks: [
-      'Add the exact wording from the task card if needed.',
-      'Make sure the operation is explicitly present in the text.',
-      'Check whether the database really contains the exact operation row.'
-    ],
-    codes: [],
-    trace: segments.map((s, i) => `Segment ${i + 1}: ${s.decision} — ${s.segment}`)
-  };
+  values.forEach((item) => {
+    const li = document.createElement('li');
+    const strong = document.createElement('strong');
+    strong.textContent = item?.code || 'UNKNOWN';
+    li.appendChild(strong);
+
+    if (item?.role) {
+      li.appendChild(document.createTextNode(` - ${item.role}`));
+    }
+
+    if (item?.note) {
+      const br = document.createElement('br');
+      const span = document.createElement('span');
+      span.className = 'small-muted';
+      span.textContent = item.note;
+      li.appendChild(br);
+      li.appendChild(span);
+    }
+
+    list.appendChild(li);
+  });
+}
+
+function renderAiResult(data) {
+  state.aiResult = data;
+  $('aiModePill').textContent = data.mode === 'live_ai' ? 'Live AI' : 'AI result';
+  $('aiRecommendation').textContent = data.recommendation || data.answer || 'No recommendation.';
+  renderSimpleList('aiWhy', data.why, 'No reasoning returned.');
+  renderSimpleList('aiChecks', data.checks, 'No checks returned.');
+  renderCodeList(data.codes);
+
+  const trace = Array.isArray(data.trace) ? [...data.trace] : [];
+  const usage = usageSummary(data.usage);
+  if (usage) trace.push(`Token usage: ${usage}`);
+  if (data.model) trace.push(`Model: ${data.model}`);
+  if (data.response_id) trace.push(`OpenAI response: ${data.response_id}`);
+  $('aiTrace').textContent = trace.join('\n') || 'No trace returned.';
+  updateStep(4, true);
 }
 
 async function runLocal() {
@@ -173,16 +234,45 @@ async function runAi() {
     setMessage('Paste text or load a TXT/PDF first.', 'error');
     return;
   }
-  if (!state.localResult) {
-    const result = SACEngine.analyzeText(state.db, text);
-    renderLocalResult(result);
-  }
+
+  setAiButtonBusy(true);
+  $('aiModePill').textContent = 'Checking API';
   updateStep(0, false);
-  updateStep(1, true);
-  updateStep(2, true);
-  const strictResult = buildStrictResult(state.localResult);
-  renderAiResult(strictResult);
-  setMessage('Strict exact search completed. No guessing was used.');
+  setMessage('Checking backend and OpenAI configuration...');
+
+  try {
+    if (!state.localResult) {
+      const result = SACEngine.analyzeText(state.db, text);
+      renderLocalResult(result);
+    }
+
+    updateStep(1, true);
+    const health = await fetchJson('/api/health');
+    if (!health.hasKey) {
+      throw new Error('OPENAI_API_KEY is missing on the server. Add it to the hosting environment or local .env file, then restart the server.');
+    }
+
+    $('aiModePill').textContent = 'Calling API';
+    updateStep(2, true);
+    setMessage(`Sending task to OpenAI (${health.model})...`);
+
+    const data = await fetchJson('/api/agent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskText: text, localResult: state.localResult })
+    });
+
+    updateStep(3, true);
+    renderAiResult(data);
+    const usage = usageSummary(data.usage);
+    setMessage(`Live AI copilot completed${usage ? ` with token usage: ${usage}.` : '.'}`);
+  } catch (error) {
+    $('aiModePill').textContent = 'API error';
+    updateStep(0, false);
+    setMessage(`AI copilot failed: ${error.message || error}`, 'error');
+  } finally {
+    setAiButtonBusy(false);
+  }
 }
 
 async function extractPdfText(file) {
@@ -212,17 +302,17 @@ function bindEvents() {
     $('taskCard').value = '';
     $('candidateList').innerHTML = '';
     $('operationsList').innerHTML = '';
-    $('bestSac').textContent = '—';
-    $('bestConfidence').textContent = '—';
-    $('definitionText').textContent = '—';
-    $('bestSource').textContent = '—';
-    $('bestMatchText').textContent = '—';
-    $('accessText').textContent = '—';
-    $('coreHours').textContent = '—';
-    $('accessHours').textContent = '—';
+    $('bestSac').textContent = '\u2014';
+    $('bestConfidence').textContent = '\u2014';
+    $('definitionText').textContent = '\u2014';
+    $('bestSource').textContent = '\u2014';
+    $('bestMatchText').textContent = '\u2014';
+    $('accessText').textContent = '\u2014';
+    $('coreHours').textContent = '\u2014';
+    $('accessHours').textContent = '\u2014';
     $('statusPill').className = 'pill';
     $('statusPill').textContent = 'Idle';
-    $('aiRecommendation').textContent = 'Run AI copilot to get a strict exact-search result.';
+    $('aiRecommendation').textContent = 'Run AI copilot to get a live API recommendation.';
     $('aiWhy').innerHTML = '';
     $('aiChecks').innerHTML = '';
     $('aiCodes').innerHTML = '';
@@ -244,7 +334,7 @@ function bindEvents() {
     try {
       let text = '';
       if (file.name.toLowerCase().endsWith('.pdf')) {
-        setMessage('Reading PDF…');
+        setMessage('Reading PDF...');
         text = await extractPdfText(file);
       } else {
         text = await file.text();
