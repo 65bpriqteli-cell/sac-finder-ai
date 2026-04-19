@@ -102,6 +102,29 @@
     return null;
   }
 
+  function rowSource(row, fallbackSource, fallbackRef) {
+    const workbookName = row?.workbook || row?.sourceWorkbook || 'All data .xlsx';
+    return {
+      source: row?.source || workbookName || fallbackSource,
+      ref: row?.source_ref || fallbackRef,
+    };
+  }
+
+  function pushMatches(matches, row, codes, source, ref, text, op, tokens) {
+    for (const code of codes) {
+      if (!code) continue;
+      matches.push({
+        code,
+        source,
+        ref,
+        source_ref: ref,
+        text,
+        op,
+        tokens
+      });
+    }
+  }
+
   function exactRowsForSegment(db, segment) {
     const op = detectOperation(segment);
     const tokens = signalTokens(segment);
@@ -124,34 +147,16 @@
       const text = `${row.description || ''} ${row.access_notes || ''} ${row.access || ''}`;
       if (!operationAligned(op, text)) continue;
       if (!allTokensPresent(tokens, text)) continue;
-      for (const code of splitSacCodes(row.sac)) {
-        if (!code) continue;
-        matches.push({
-          code,
-          source: 'A320 MPD',
-          ref: `Row ${row.row}`,
-          text: row.description || text,
-          op,
-          tokens
-        });
-      }
+      const src = rowSource(row, 'A320 MPD', `Row ${row.row}`);
+      pushMatches(matches, row, splitSacCodes(row.sac), src.source, src.ref, row.description || text, op, tokens);
     }
 
     for (const row of (db.sheet1 || [])) {
       const text = `${row.cri || ''} ${row.description || ''} ${row.planning_comments || ''} ${row.access_note || ''}`;
       if (!operationAligned(op, text)) continue;
       if (!allTokensPresent(tokens, text)) continue;
-      for (const code of splitSacCodes(row.sac_code)) {
-        if (!code) continue;
-        matches.push({
-          code,
-          source: 'Sheet1',
-          ref: `Row ${row.row}`,
-          text: row.description || text,
-          op,
-          tokens
-        });
-      }
+      const src = rowSource(row, 'Sheet1', `Row ${row.row}`);
+      pushMatches(matches, row, splitSacCodes(row.sac_code), src.source, src.ref, row.description || text, op, tokens);
     }
 
     const uniqueCodes = [...new Set(matches.map((m) => m.code))];
@@ -234,6 +239,7 @@
     });
 
     return {
+      sourceWorkbook: db?.sourceWorkbook || null,
       segments,
       final: {
         decision,
@@ -267,6 +273,7 @@
     detectAccessLike,
     getDefinitionByCode,
     getSACDBByCode,
+    splitSacCodes,
     analyzeText,
     confidenceLabel,
     confidenceClass
