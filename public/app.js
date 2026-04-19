@@ -2,8 +2,18 @@ const state = { db: null, localResult: null, aiResult: null };
 const AUTH_USER = 'luf';
 const AUTH_PASS = 'sofia1';
 const AUTH_KEY = 'sac_finder_auth_ok';
+const EMPTY_VALUE = '---';
 const $ = (id) => document.getElementById(id);
 let appInitialized = false;
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 async function loadDb() {
   const res = await fetch('/db.json');
@@ -26,13 +36,24 @@ function setMessage(text, type = 'info') {
   if (!text) {
     box.hidden = true;
     box.textContent = '';
+    box.className = 'message';
     return;
   }
   box.hidden = false;
   box.textContent = text;
-  box.style.background = type === 'error' ? '#fff1f1' : '#edf3ff';
-  box.style.borderColor = type === 'error' ? '#f1baba' : '#cbdaf7';
-  box.style.color = type === 'error' ? '#8a2e2e' : '#26427c';
+  box.className = `message message-${type}`;
+}
+
+function setApiStatus(text, type = 'neutral', meta = '') {
+  const pill = $('apiStatusPill');
+  const detail = $('apiMeta');
+  if (pill) {
+    pill.className = `status-badge ${type}`;
+    pill.textContent = text;
+  }
+  if (detail) {
+    detail.textContent = meta;
+  }
 }
 
 async function readJsonResponse(response) {
@@ -60,6 +81,31 @@ async function fetchJson(url, options = {}) {
   }
 
   return payload;
+}
+
+function sourceSummary(sources) {
+  if (!sources) return '';
+  const definitions = Number.isFinite(sources.definitions) ? sources.definitions : 0;
+  const mpd = Number.isFinite(sources.mpd) ? sources.mpd : 0;
+  return `${definitions} definitions / ${mpd} MPD rows`;
+}
+
+async function refreshApiStatus(throwOnError = false) {
+  try {
+    const health = await fetchJson('/api/health');
+    const sources = sourceSummary(health.sources);
+    const rules = Number.isFinite(health.rules) ? `${health.rules} rules` : 'rules loaded';
+    if (health.hasKey) {
+      setApiStatus('OpenAI ready', 'ready', `${health.model} / ${sources} / ${rules}`);
+    } else {
+      setApiStatus('API key missing', 'warning', `${sources} / add OPENAI_API_KEY on the server`);
+    }
+    return health;
+  } catch (error) {
+    setApiStatus('Backend offline', 'error', error.message || 'Health check failed');
+    if (throwOnError) throw error;
+    return null;
+  }
 }
 
 function usageSummary(usage) {
@@ -91,53 +137,56 @@ function renderLocalResult(result) {
 
   $('bestSac').textContent = best ? best.code : 'NO SAC';
   $('bestConfidence').textContent = meta.short;
-  $('coreHours').textContent = '\u2014';
-  $('accessHours').textContent = '\u2014';
-  $('definitionText').textContent = result?.final?.definitionText || '\u2014';
-  $('bestSource').textContent = best && best.sourceMatch ? `${best.sourceMatch.source} / ${best.sourceMatch.ref}` : '\u2014';
-  $('bestMatchText').textContent = result?.final?.topCoreSegment?.segment || result?.final?.decisionText || '\u2014';
-  $('accessText').textContent = result?.final?.accessText || '\u2014';
+  $('coreHours').textContent = EMPTY_VALUE;
+  $('accessHours').textContent = EMPTY_VALUE;
+  $('definitionText').textContent = result?.final?.definitionText || EMPTY_VALUE;
+  $('bestSource').textContent = best && best.sourceMatch ? `${best.sourceMatch.source} / ${best.sourceMatch.ref}` : EMPTY_VALUE;
+  $('bestMatchText').textContent = result?.final?.topCoreSegment?.segment || result?.final?.decisionText || EMPTY_VALUE;
+  $('accessText').textContent = result?.final?.accessText || EMPTY_VALUE;
 
   const status = $('statusPill');
   status.className = meta.pill;
   status.textContent = meta.label;
 
-  $('candidateList').innerHTML = (result.final.ranked || []).map((item) => {
-    const source = item.source ? `${item.source.source} / ${item.source.ref}` : '\u2014';
+  const ranked = result?.final?.ranked || [];
+  $('candidateList').innerHTML = ranked.map((item) => {
+    const source = item.source ? `${item.source.source} / ${item.source.ref}` : EMPTY_VALUE;
     return `
       <article class="candidate-item">
         <div class="candidate-top">
           <div>
-            <div class="candidate-code">${item.code}</div>
-            <div class="candidate-meta">${source}</div>
+            <div class="candidate-code">${escapeHtml(item.code)}</div>
+            <div class="candidate-meta">${escapeHtml(source)}</div>
           </div>
           <div class="pill pill-high">Exact row</div>
         </div>
-        <div class="small-muted" style="margin-top:10px;">${item.definition || 'No definition text found.'}</div>
+        <div class="small-muted candidate-definition">${escapeHtml(item.definition || 'No definition text found.')}</div>
       </article>
     `;
-  }).join('') || '<div class="detail-box"><p>No exact SAC rows found.</p></div>';
+  }).join('') || '<div class="empty-state">No exact SAC rows found.</div>';
 
-  $('operationsList').innerHTML = result.segments.map((seg) => {
+  const segments = result?.segments || [];
+  $('operationsList').innerHTML = segments.map((seg) => {
     const match = seg.exactMatches && seg.exactMatches[0] ? seg.exactMatches[0] : null;
     const tagClass = seg.decision === 'EXACT' ? 'pill pill-high' : (seg.decision === 'MULTIPLE' ? 'pill pill-medium' : 'pill pill-low');
     const tagText = seg.decision === 'EXACT' ? 'Exact row found' : (seg.decision === 'MULTIPLE' ? 'Multiple exact rows' : 'No exact row');
+    const matchText = match ? `${match.code} from ${match.source} / ${match.ref}` : seg.reason;
     return `
       <article class="operation-item">
         <div class="operation-top">
           <div>
-            <strong>${seg.op ? seg.op.toUpperCase() : 'NO OPERATION'}</strong>
-            <div class="small-muted" style="margin-top:8px;">${seg.segment}</div>
+            <strong>${escapeHtml(seg.op ? seg.op.toUpperCase() : 'NO OPERATION')}</strong>
+            <div class="small-muted operation-segment">${escapeHtml(seg.segment)}</div>
           </div>
-          <div class="${tagClass}">${tagText}</div>
+          <div class="${tagClass}">${escapeHtml(tagText)}</div>
         </div>
-        <div class="small-muted" style="margin-top:12px;">
-          <strong>Search result:</strong> ${match ? `${match.code} from ${match.source} / ${match.ref}` : seg.reason}<br>
+        <div class="small-muted operation-result">
+          <strong>Search result:</strong> ${escapeHtml(matchText)}<br>
           <strong>Mode:</strong> strict exact search
         </div>
       </article>
     `;
-  }).join('') || '<div class="detail-box"><p>No operations detected yet.</p></div>';
+  }).join('') || '<div class="empty-state">No operations detected yet.</div>';
 }
 
 function updateStep(index, doneBefore = true) {
@@ -187,11 +236,11 @@ function renderCodeList(codes) {
       li.appendChild(document.createTextNode(` - ${item.role}`));
     }
 
-    if (item?.note) {
+    if (item?.note || item?.evidence_ref) {
       const br = document.createElement('br');
       const span = document.createElement('span');
       span.className = 'small-muted';
-      span.textContent = item.note;
+      span.textContent = [item.note, item.evidence_ref ? `Evidence: ${item.evidence_ref}` : ''].filter(Boolean).join(' ');
       li.appendChild(br);
       li.appendChild(span);
     }
@@ -202,13 +251,16 @@ function renderCodeList(codes) {
 
 function renderAiResult(data) {
   state.aiResult = data;
-  $('aiModePill').textContent = data.mode === 'live_ai' ? 'Live AI' : 'AI result';
+  const status = data.status ? `AI ${data.status}` : (data.mode === 'live_ai' ? 'Live AI' : 'AI result');
+  $('aiModePill').textContent = status;
   $('aiRecommendation').textContent = data.recommendation || data.answer || 'No recommendation.';
   renderSimpleList('aiWhy', data.why, 'No reasoning returned.');
   renderSimpleList('aiChecks', data.checks, 'No checks returned.');
   renderCodeList(data.codes);
 
   const trace = Array.isArray(data.trace) ? [...data.trace] : [];
+  if (data.status) trace.unshift(`Decision: ${data.status}`);
+  if (data.confidence) trace.unshift(`Confidence: ${data.confidence}`);
   const usage = usageSummary(data.usage);
   if (usage) trace.push(`Token usage: ${usage}`);
   if (data.model) trace.push(`Model: ${data.model}`);
@@ -247,8 +299,8 @@ async function runAi() {
     }
 
     updateStep(1, true);
-    const health = await fetchJson('/api/health');
-    if (!health.hasKey) {
+    const health = await refreshApiStatus(true);
+    if (!health?.hasKey) {
       throw new Error('OPENAI_API_KEY is missing on the server. Add it to the hosting environment or local .env file, then restart the server.');
     }
 
@@ -291,9 +343,17 @@ async function extractPdfText(file) {
   return pages.join('\n');
 }
 
+function resetInputState() {
+  state.localResult = null;
+  state.aiResult = null;
+}
+
 function bindEvents() {
   ['description', 'planning', 'taskCard'].forEach((id) => {
-    $(id).addEventListener('input', combinedInput);
+    $(id).addEventListener('input', () => {
+      resetInputState();
+      combinedInput();
+    });
   });
 
   $('clearBtn').addEventListener('click', () => {
@@ -302,14 +362,14 @@ function bindEvents() {
     $('taskCard').value = '';
     $('candidateList').innerHTML = '';
     $('operationsList').innerHTML = '';
-    $('bestSac').textContent = '\u2014';
-    $('bestConfidence').textContent = '\u2014';
-    $('definitionText').textContent = '\u2014';
-    $('bestSource').textContent = '\u2014';
-    $('bestMatchText').textContent = '\u2014';
-    $('accessText').textContent = '\u2014';
-    $('coreHours').textContent = '\u2014';
-    $('accessHours').textContent = '\u2014';
+    $('bestSac').textContent = EMPTY_VALUE;
+    $('bestConfidence').textContent = EMPTY_VALUE;
+    $('definitionText').textContent = EMPTY_VALUE;
+    $('bestSource').textContent = EMPTY_VALUE;
+    $('bestMatchText').textContent = EMPTY_VALUE;
+    $('accessText').textContent = EMPTY_VALUE;
+    $('coreHours').textContent = EMPTY_VALUE;
+    $('accessHours').textContent = EMPTY_VALUE;
     $('statusPill').className = 'pill';
     $('statusPill').textContent = 'Idle';
     $('aiRecommendation').textContent = 'Run AI copilot to get a live API recommendation.';
@@ -321,8 +381,7 @@ function bindEvents() {
     updateStep(0, false);
     combinedInput();
     setMessage('');
-    state.localResult = null;
-    state.aiResult = null;
+    resetInputState();
   });
 
   $('runLocalBtn').addEventListener('click', runLocal);
@@ -340,6 +399,7 @@ function bindEvents() {
         text = await file.text();
       }
       $('taskCard').value = text;
+      resetInputState();
       combinedInput();
       setMessage(`Loaded ${file.name}`);
     } catch (error) {
@@ -382,11 +442,13 @@ function bindAuth() {
 
 async function initApp() {
   if (appInitialized) return;
+  setApiStatus('Loading data', 'neutral', 'Reading workbook source...');
   await loadDb();
   bindEvents();
   combinedInput();
   updateStep(0, false);
   appInitialized = true;
+  refreshApiStatus();
 }
 
 (async function init() {
