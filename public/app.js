@@ -1,8 +1,10 @@
-const state = { db: null, localResult: null, aiResult: null };
+const state = { db: null, localResult: null, aiResult: null, dbLabel: 'Repository data' };
 const AUTH_USER = 'luf';
 const AUTH_PASS = 'sofia1';
 const AUTH_KEY = 'sac_finder_auth_ok';
+const DB_STORAGE_KEY = 'sac_finder_imported_db_v1';
 const EMPTY_VALUE = '---';
+const SAC_CODE_RE = /^[A-Z]{3}-[A-Z0-9_/-]+-\d$/;
 const $ = (id) => document.getElementById(id);
 let appInitialized = false;
 
@@ -15,10 +17,190 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function cleanCell(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function splitSacCodes(raw) {
+  return [...new Set(String(raw || '')
+    .split(/\r?\n|\s+|,|;/g)
+    .map((x) => cleanCell(x))
+    .filter((x) => SAC_CODE_RE.test(x)))];
+}
+
+function dbCounts(db) {
+  return {
+    definitions: Array.isArray(db?.definitions) ? db.definitions.length : 0,
+    mpd: Array.isArray(db?.mpd) ? db.mpd.length : 0,
+  };
+}
+
+function dbSummary(db) {
+  const counts = dbCounts(db);
+  return `${counts.definitions} definitions / ${counts.mpd} example rows`;
+}
+
+function updateDataSourceUi(label = state.dbLabel, badgeText = 'Source') {
+  const title = $('dataSourceTitle');
+  const meta = $('dataSourceMeta');
+  const badge = $('dataSourceBadge');
+  if (!title || !meta || !badge) return;
+
+  title.textContent = label;
+  meta.textContent = state.db ? `${dbSummary(state.db)}. Evidence references use the workbook sheet and row.` : 'No source data loaded.';
+  badge.textContent = badgeText;
+  badge.className = badgeText.toLowerCase().includes('imported') ? 'pill pill-high' : 'pill';
+}
+
+function applyDb(db, label, badgeText, persist = false) {
+  state.db = db;
+  state.dbLabel = label;
+  resetInputState();
+  updateDataSourceUi(label, badgeText);
+
+  if (persist) {
+    try {
+      localStorage.setItem(DB_STORAGE_KEY, JSON.stringify({ label, db }));
+    } catch {
+      setMessage('Excel data loaded for this session, but browser storage is full so it was not saved.', 'error');
+    }
+  }
+}
+
+function loadStoredDb() {
+  try {
+    const raw = localStorage.getItem(DB_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.db || !Array.isArray(parsed.db.mpd)) return null;
+    return parsed;
+  } catch {
+    localStorage.removeItem(DB_STORAGE_KEY);
+    return null;
+  }
+}
+
 async function loadDb() {
+  const stored = loadStoredDb();
+  if (stored) {
+    applyDb(stored.db, stored.label || 'Imported Excel data', 'Imported Excel', false);
+    return;
+  }
+
   const res = await fetch('/db.json');
   if (!res.ok) throw new Error('Failed to load db.json');
-  state.db = await res.json();
+  const db = await res.json();
+  applyDb(db, 'Repository workbook data', 'Repo data', false);
+}
+
+function sheetRows(workbook, sheetName) {
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) return [];
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' })
+    .map((row, index) => ({
+      rowNumber: index + 1,
+      values: row.map((cell) => cleanCell(cell)),
+    }))
+    .filter((row) => row.values.some(Boolean));
+}
+
+function findMpdSheet(parsedSheets) {
+  return parsedSheets.find((sheet) => sheet.rows.some((row) => {
+    const first = cleanCell(row.values[0]).toUpperCase();
+    const second = cleanCell(row.values[1]).toUpperCase();
+    return first === 'DESCRIPTION' && second === 'SAC CODE';
+  })) || parsedSheets.find((sheet) => sheet.name.toLowerCase() === 'sheet2') || parsedSheets[0];
+}
+
+function extractDefinitions(parsedSheets, fileName) {
+  const definitions = [];
+  const seen = new Set();
+
+  for (const sheet of parsedSheets) {
+    for (const row of sheet.rows) {
+      const code = cleanCell(row.values[0]);
+      const description = cleanCell(row.values[1]);
+      if (!SAC_CODE_RE.test(code) || !description) continue;
+      const key = `${code}|${sheet.name}|${row.rowNumber}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      definitions.push({
+        code,
+        description,
+        row: row.rowNumber,
+        source: fileName,
+        source_ref: `${sheet.name} row ${row.rowNumber}`,
+      });
+    }
+  }
+
+  return definitions;
+}
+
+function extractMpdRows(sheet, fileName) {
+  const headerIndex = sheet.rows.findIndex((row) => {
+    const first = cleanCell(row.values[0]).toUpperCase();
+    const second = cleanCell(row.values[1]).toUpperCase();
+    return first === 'DESCRIPTION' && second === 'SAC CODE';
+  });
+  const startIndex = headerIndex >= 0 ? headerIndex + 1 : 0;
+  const rows = [];
+
+  for (const row of sheet.rows.slice(startIndex)) {
+    const description = cleanCell(row.values[0]);
+    const codes = splitSacCodes(row.values[1]);
+    if (!description || !codes.length) continue;
+    rows.push({
+      row: row.rowNumber,
+      description,
+      sac: codes.join('\n'),
+      source: fileName,
+      source_ref: `${sheet.name} row ${row.rowNumber}`,
+    });
+  }
+
+  return rows;
+}
+
+function buildDbFromWorkbook(workbook, fileName) {
+  const parsedSheets = workbook.SheetNames.map((name) => ({ name, rows: sheetRows(workbook, name) }));
+  const definitions = extractDefinitions(parsedSheets, fileName);
+  const mpdSheet = findMpdSheet(parsedSheets);
+  const mpd = mpdSheet ? extractMpdRows(mpdSheet, fileName) : [];
+
+  if (!definitions.length) {
+    throw new Error('No SAC definition rows were found. Expected codes like CAB-CO_CARPFLO-0 in column A and descriptions in column B.');
+  }
+  if (!mpd.length) {
+    throw new Error('No example rows with DESCRIPTION and SAC CODE were found.');
+  }
+
+  return {
+    sourceWorkbook: {
+      fileName,
+      importedAt: new Date().toISOString(),
+      rule: 'Every recommendation must cite source_ref such as Sheet2 row 12.',
+      definitions: definitions.length,
+      examples: mpd.length,
+    },
+    definitions,
+    mpd,
+    apl: [],
+    sacdb: [],
+    sheet1: [],
+  };
+}
+
+async function importExcelFile(file) {
+  if (!window.XLSX) {
+    throw new Error('Excel parser did not load. Check the CDN connection and refresh the page.');
+  }
+  setMessage(`Reading ${file.name}...`);
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: 'array' });
+  const db = buildDbFromWorkbook(workbook, file.name);
+  applyDb(db, file.name, 'Imported Excel', true);
+  setMessage(`Loaded ${file.name}: ${dbSummary(db)}. Every match now cites the source sheet and row.`);
 }
 
 function combinedInput() {
@@ -87,7 +269,7 @@ function sourceSummary(sources) {
   if (!sources) return '';
   const definitions = Number.isFinite(sources.definitions) ? sources.definitions : 0;
   const mpd = Number.isFinite(sources.mpd) ? sources.mpd : 0;
-  return `${definitions} definitions / ${mpd} MPD rows`;
+  return `${definitions} server definitions / ${mpd} server rows`;
 }
 
 function modelBudgetSummary(health) {
@@ -99,15 +281,15 @@ function modelBudgetSummary(health) {
 async function refreshApiStatus(throwOnError = false) {
   try {
     const health = await fetchJson('/api/health');
-    const sources = sourceSummary(health.sources);
+    const localSources = state.db ? dbSummary(state.db) : 'browser source not loaded';
     const rules = Number.isFinite(health.rules) ? `${health.rules} rules` : 'rules loaded';
     const modelBudget = modelBudgetSummary(health);
     if (health.hasKey) {
-      setApiStatus('OpenAI ready', 'ready', `${modelBudget} / ${sources} / ${rules}`);
+      setApiStatus('OpenAI ready', 'ready', `${modelBudget} / browser ${localSources} / ${rules}`);
     } else {
-      setApiStatus('API key missing', 'warning', `${modelBudget} / ${sources} / add OPENAI_API_KEY on the server`);
+      setApiStatus('API key missing', 'warning', `${modelBudget} / browser ${localSources} / add OPENAI_API_KEY on the server`);
     }
-    return health;
+    return { ...health, sourceSummary: sourceSummary(health.sources) };
   } catch (error) {
     setApiStatus('Backend offline', 'error', error.message || 'Health check failed');
     if (throwOnError) throw error;
@@ -282,9 +464,49 @@ async function runLocal() {
     setMessage('Paste text or load a TXT/PDF first.', 'error');
     return;
   }
+  if (!state.db) {
+    setMessage('Source data is not loaded yet.', 'error');
+    return;
+  }
   const result = SACEngine.analyzeText(state.db, text);
   renderLocalResult(result);
-  setMessage('Strict search finished. SAC is released only on one exact authoritative match.');
+  setMessage('Strict search finished. SAC is released only on one exact authoritative match with a sheet and row reference.');
+}
+
+function clientEvidenceForAi(localResult) {
+  const rows = [];
+  const seenRows = new Set();
+
+  for (const segment of (localResult?.segments || [])) {
+    for (const match of (segment.exactMatches || [])) {
+      const evidenceRef = match.source_ref || match.ref || '';
+      const key = `${match.code}|${evidenceRef}|${match.text}`;
+      if (seenRows.has(key)) continue;
+      seenRows.add(key);
+      rows.push({
+        code: match.code,
+        source: match.source || state.dbLabel,
+        source_ref: evidenceRef,
+        text: match.text || '',
+        matched_segment: segment.segment || '',
+      });
+    }
+  }
+
+  const definitions = [];
+  const seenDefinitions = new Set();
+  for (const item of (localResult?.final?.ranked || [])) {
+    if (!item?.code || seenDefinitions.has(item.code)) continue;
+    seenDefinitions.add(item.code);
+    definitions.push({ code: item.code, description: item.definition || '' });
+  }
+
+  return {
+    dataSource: state.dbLabel,
+    sourceWorkbook: state.db?.sourceWorkbook || null,
+    rows,
+    definitions,
+  };
 }
 
 async function runAi() {
@@ -313,12 +535,16 @@ async function runAi() {
 
     $('aiModePill').textContent = 'Calling API';
     updateStep(2, true);
-    setMessage(`Sending task to OpenAI (${health.model})...`);
+    setMessage(`Sending task to OpenAI (${health.model}) with workbook evidence refs...`);
 
     const data = await fetchJson('/api/agent', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskText: text, localResult: state.localResult })
+      body: JSON.stringify({
+        taskText: text,
+        localResult: state.localResult,
+        clientEvidence: clientEvidenceForAi(state.localResult),
+      })
     });
 
     updateStep(3, true);
@@ -355,6 +581,28 @@ function resetInputState() {
   state.aiResult = null;
 }
 
+function clearResults() {
+  $('candidateList').innerHTML = '';
+  $('operationsList').innerHTML = '';
+  $('bestSac').textContent = EMPTY_VALUE;
+  $('bestConfidence').textContent = EMPTY_VALUE;
+  $('definitionText').textContent = EMPTY_VALUE;
+  $('bestSource').textContent = EMPTY_VALUE;
+  $('bestMatchText').textContent = EMPTY_VALUE;
+  $('accessText').textContent = EMPTY_VALUE;
+  $('coreHours').textContent = EMPTY_VALUE;
+  $('accessHours').textContent = EMPTY_VALUE;
+  $('statusPill').className = 'pill';
+  $('statusPill').textContent = 'Idle';
+  $('aiRecommendation').textContent = 'Run AI copilot to get a live API recommendation.';
+  $('aiWhy').innerHTML = '';
+  $('aiChecks').innerHTML = '';
+  $('aiCodes').innerHTML = '';
+  $('aiTrace').textContent = 'No AI activity yet.';
+  $('aiModePill').textContent = 'Ready';
+  updateStep(0, false);
+}
+
 function bindEvents() {
   ['description', 'planning', 'taskCard'].forEach((id) => {
     $(id).addEventListener('input', () => {
@@ -367,32 +615,43 @@ function bindEvents() {
     $('description').value = '';
     $('planning').value = '';
     $('taskCard').value = '';
-    $('candidateList').innerHTML = '';
-    $('operationsList').innerHTML = '';
-    $('bestSac').textContent = EMPTY_VALUE;
-    $('bestConfidence').textContent = EMPTY_VALUE;
-    $('definitionText').textContent = EMPTY_VALUE;
-    $('bestSource').textContent = EMPTY_VALUE;
-    $('bestMatchText').textContent = EMPTY_VALUE;
-    $('accessText').textContent = EMPTY_VALUE;
-    $('coreHours').textContent = EMPTY_VALUE;
-    $('accessHours').textContent = EMPTY_VALUE;
-    $('statusPill').className = 'pill';
-    $('statusPill').textContent = 'Idle';
-    $('aiRecommendation').textContent = 'Run AI copilot to get a live API recommendation.';
-    $('aiWhy').innerHTML = '';
-    $('aiChecks').innerHTML = '';
-    $('aiCodes').innerHTML = '';
-    $('aiTrace').textContent = 'No AI activity yet.';
-    $('aiModePill').textContent = 'Ready';
-    updateStep(0, false);
+    clearResults();
     combinedInput();
     setMessage('');
     resetInputState();
   });
 
+  $('resetDataBtn').addEventListener('click', async () => {
+    try {
+      localStorage.removeItem(DB_STORAGE_KEY);
+      const res = await fetch('/db.json');
+      if (!res.ok) throw new Error('Failed to load repository data.');
+      const db = await res.json();
+      applyDb(db, 'Repository workbook data', 'Repo data', false);
+      clearResults();
+      setMessage('Repository data restored. Load All data .xlsx again when you need the full local workbook.');
+      refreshApiStatus();
+    } catch (error) {
+      setMessage(`Could not reset data: ${error.message || error}`, 'error');
+    }
+  });
+
   $('runLocalBtn').addEventListener('click', runLocal);
   $('runAiBtn').addEventListener('click', runAi);
+
+  $('excelInput').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      await importExcelFile(file);
+      clearResults();
+      refreshApiStatus();
+    } catch (error) {
+      setMessage(`Could not import Excel data: ${error.message || error}`, 'error');
+    } finally {
+      event.target.value = '';
+    }
+  });
 
   $('fileInput').addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
@@ -411,6 +670,8 @@ function bindEvents() {
       setMessage(`Loaded ${file.name}`);
     } catch (error) {
       setMessage(`Could not read file: ${error.message || error}`, 'error');
+    } finally {
+      event.target.value = '';
     }
   });
 }
