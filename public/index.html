@@ -10,8 +10,6 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="page-shell"></div>
-
   <div id="authScreen" class="auth-screen">
     <div class="auth-card card">
       <div class="brand-lockup brand-lockup-dark">
@@ -20,8 +18,8 @@
       </div>
       <div class="auth-copy">
         <div class="auth-eyebrow">Restricted access</div>
-        <h1>Lufthansa-Technik SAC Finder</h1>
-        <p>Sign in to access the SAC lookup workspace.</p>
+        <h1>SAC Finder</h1>
+        <p>Sign in to open the planning workspace.</p>
       </div>
       <form id="authForm" class="auth-form">
         <label>
@@ -32,21 +30,51 @@
           <span>Password</span>
           <input id="authPassword" type="password" autocomplete="current-password" />
         </label>
-        <button type="submit" class="btn btn-primary auth-submit">Enter</button>
+        <button type="submit" class="btn btn-primary auth-submit">Enter workspace</button>
       </form>
       <div id="authError" class="auth-error" hidden>Wrong username or password.</div>
     </div>
   </div>
 
   <main id="appRoot" class="app" hidden>
-    <section class="hero card">
-      <div class="hero-copy hero-copy-minimal">
-        <div class="brand-lockup brand-lockup-light">
+    <header class="topbar">
+      <div class="brand-row">
+        <div class="brand-mark">
           <img class="brand-logo" src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Lufthansa%20Logo%202018%20crane.svg" alt="Lufthansa logo" />
-          <span class="brand-text">Lufthansa-Technik</span>
         </div>
-        <h1 class="hero-title-compact">SAC Finder</h1>
+        <div>
+          <p class="eyebrow">Restricted planning workspace</p>
+          <h1>SAC Finder</h1>
+          <p class="topbar-copy">Grounded SAC guidance from workbook evidence and live OpenAI review.</p>
+        </div>
       </div>
+      <div class="status-panel" aria-live="polite">
+        <div id="apiStatusPill" class="status-badge neutral">Checking API</div>
+        <div id="apiMeta" class="status-meta">Workbook loading...</div>
+      </div>
+    </header>
+
+    <section class="rules-strip" aria-label="Operating rules">
+      <article class="rule-item">
+        <span>01</span>
+        <strong>Source locked</strong>
+        <p>Only SAC Definition and A320 MPD rows can support a recommendation.</p>
+      </article>
+      <article class="rule-item">
+        <span>02</span>
+        <strong>No guessing</strong>
+        <p>Missing or conflicting evidence returns review or no SAC.</p>
+      </article>
+      <article class="rule-item">
+        <span>03</span>
+        <strong>Audit trail</strong>
+        <p>Live AI responses include model, response id, usage, and trace.</p>
+      </article>
+      <article class="rule-item">
+        <span>04</span>
+        <strong>Planner control</strong>
+        <p>Core work and access work stay visible before final release.</p>
+      </article>
     </section>
 
     <section class="workspace">
@@ -54,8 +82,9 @@
         <section class="card input-card">
           <div class="section-head">
             <div>
+              <p class="eyebrow">Task intake</p>
               <h2>Input</h2>
-              <p>Paste a task description, planning comments, or a whole task card.</p>
+              <p>Paste a task description, planning comments, or a full task card.</p>
             </div>
             <div class="button-row">
               <label class="upload-btn">
@@ -98,8 +127,9 @@
         <section class="card result-card">
           <div class="section-head">
             <div>
-              <h2>Best local match / bundle</h2>
-              <p>Fast deterministic result from your embedded workbook data.</p>
+              <p class="eyebrow">Deterministic pass</p>
+              <h2>Local match</h2>
+              <p>Fast workbook lookup before live model review.</p>
             </div>
             <div id="statusPill" class="pill">Idle</div>
           </div>
@@ -107,38 +137,38 @@
           <div class="best-grid">
             <div class="metric">
               <span>Best SAC</span>
-              <strong id="bestSac">—</strong>
+              <strong id="bestSac">---</strong>
             </div>
             <div class="metric">
               <span>Confidence</span>
-              <strong id="bestConfidence">—</strong>
+              <strong id="bestConfidence">---</strong>
             </div>
             <div class="metric">
               <span>Core hours</span>
-              <strong id="coreHours">—</strong>
+              <strong id="coreHours">---</strong>
             </div>
             <div class="metric">
               <span>Access hours</span>
-              <strong id="accessHours">—</strong>
+              <strong id="accessHours">---</strong>
             </div>
           </div>
 
           <div class="details-grid">
             <article class="detail-box">
               <h3>Definition</h3>
-              <p id="definitionText">—</p>
+              <p id="definitionText">---</p>
             </article>
             <article class="detail-box">
               <h3>Main evidence</h3>
-              <p id="bestSource">—</p>
+              <p id="bestSource">---</p>
             </article>
             <article class="detail-box">
               <h3>Core matched segment</h3>
-              <p id="bestMatchText">—</p>
+              <p id="bestMatchText">---</p>
             </article>
             <article class="detail-box">
               <h3>Access reasoning</h3>
-              <p id="accessText">—</p>
+              <p id="accessText">---</p>
             </article>
           </div>
         </section>
@@ -146,8 +176,9 @@
         <section class="card candidates-card">
           <div class="section-head">
             <div>
+              <p class="eyebrow">Ranked evidence</p>
               <h2>Top candidates</h2>
-              <p>Best ranked candidates from the local retrieval engine.</p>
+              <p>Exact workbook candidates from the local retrieval engine.</p>
             </div>
           </div>
           <div id="candidateList" class="candidate-list"></div>
@@ -158,23 +189,24 @@
         <section class="card ai-card">
           <div class="section-head">
             <div>
+              <p class="eyebrow">Live model review</p>
               <h2>AI copilot</h2>
-              <p>Uses the local evidence first, then reasons more flexibly about bundle choice, ambiguity, and checks.</p>
+              <p>Strict SAC recommendation with source-locked rules and audit metadata.</p>
             </div>
             <div id="aiModePill" class="pill pill-gold">Ready</div>
           </div>
 
           <div class="agent-steps" id="agentSteps">
             <div class="agent-step active"><span></span>Read task text</div>
-            <div class="agent-step"><span></span>Retrieve evidence</div>
-            <div class="agent-step"><span></span>Reason like planner</div>
+            <div class="agent-step"><span></span>Check workbook evidence</div>
+            <div class="agent-step"><span></span>Apply SAC rules</div>
             <div class="agent-step"><span></span>Return recommendation</div>
           </div>
 
           <div class="ai-output-grid">
             <article class="detail-box tall">
               <h3>Recommendation</h3>
-              <div id="aiRecommendation" class="ai-text muted">Run AI copilot to get a more flexible recommendation.</div>
+              <div id="aiRecommendation" class="ai-text muted">Run AI copilot to get a live API recommendation.</div>
             </article>
             <article class="detail-box">
               <h3>Why</h3>
@@ -190,7 +222,7 @@
             </article>
           </div>
 
-          <div class="detail-box">
+          <div class="detail-box audit-box">
             <h3>Agent trace</h3>
             <div id="aiTrace" class="trace-box">No AI activity yet.</div>
           </div>
@@ -199,6 +231,7 @@
         <section class="card operations-card">
           <div class="section-head">
             <div>
+              <p class="eyebrow">Parsing view</p>
               <h2>Detected operations</h2>
               <p>Each line is classified as core or access-like.</p>
             </div>
