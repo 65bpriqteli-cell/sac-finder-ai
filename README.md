@@ -35,19 +35,30 @@ Required environment variable:
 OPENAI_API_KEY=sk-...
 ```
 
-Optional environment variables:
+Recommended OpenAI settings:
 
 ```bash
 OPENAI_MODEL=gpt-5-nano
+OPENAI_REASONING_EFFORT=minimal
+OPENAI_MAX_OUTPUT_TOKENS=4096
+```
+
+Optional environment variables:
+
+```bash
 OPENAI_BASE_URL=https://api.openai.com/v1
 PORT=3000
 ```
 
 ## Health Checks
 
-- `GET /api/health` checks source counts, rules count, model, and whether the server has an API key.
+- `GET /api/health` checks source counts, rules count, model, reasoning effort, output budget, and whether the server has an API key.
 - `GET /api/test-openai` sends a small OpenAI ping.
 - `POST /api/agent` runs the live SAC copilot.
+
+## Empty Response Troubleshooting
+
+If the UI reports that OpenAI returned no final content, the model likely spent the output budget on reasoning before producing structured JSON. Keep `OPENAI_REASONING_EFFORT=minimal` and increase `OPENAI_MAX_OUTPUT_TOKENS` if needed.
 
 ## Login
 
