@@ -58,7 +58,7 @@
       <article class="rule-item">
         <span>01</span>
         <strong>Source locked</strong>
-        <p>Only SAC Definition and A320 MPD rows can support a recommendation.</p>
+        <p>Only imported workbook rows can support a recommendation.</p>
       </article>
       <article class="rule-item">
         <span>02</span>
@@ -68,7 +68,7 @@
       <article class="rule-item">
         <span>03</span>
         <strong>Audit trail</strong>
-        <p>Live AI responses include model, response id, usage, and trace.</p>
+        <p>Every result cites the workbook sheet and row used as evidence.</p>
       </article>
       <article class="rule-item">
         <span>04</span>
@@ -88,11 +88,25 @@
             </div>
             <div class="button-row">
               <label class="upload-btn">
+                <input id="excelInput" type="file" accept=".xlsx,.xls" hidden />
+                Load Excel data
+              </label>
+              <label class="upload-btn">
                 <input id="fileInput" type="file" accept=".txt,.pdf" hidden />
                 Load TXT / PDF
               </label>
+              <button id="resetDataBtn" class="btn btn-secondary">Repo data</button>
               <button id="clearBtn" class="btn btn-secondary">Clear</button>
             </div>
+          </div>
+
+          <div class="data-source-box" aria-live="polite">
+            <div>
+              <span class="data-label">Active source</span>
+              <strong id="dataSourceTitle">Loading workbook source</strong>
+              <p id="dataSourceMeta">Waiting for source data.</p>
+            </div>
+            <div id="dataSourceBadge" class="pill">Source</div>
           </div>
 
           <div class="grid-2">
@@ -243,6 +257,7 @@
   </main>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="/engine.js"></script>
   <script src="/app.js"></script>
 </body>
