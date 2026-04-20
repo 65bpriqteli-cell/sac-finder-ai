@@ -2,7 +2,8 @@ const state = { db: null, localResult: null, aiResult: null, dbLabel: 'Repositor
 const AUTH_USER = 'luf';
 const AUTH_PASS = 'sofia1';
 const AUTH_KEY = 'sac_finder_auth_ok';
-const DB_STORAGE_KEY = 'sac_finder_imported_db_v1';
+const DB_STORAGE_KEY = 'sac_finder_imported_db_v2';
+const LEGACY_DB_STORAGE_KEYS = ['sac_finder_imported_db_v1'];
 const EMPTY_VALUE = '---';
 const SAC_CODE_RE = /^[A-Z]{3}-[A-Z0-9_/-]+-\d$/;
 const $ = (id) => document.getElementById(id);
@@ -28,16 +29,51 @@ function splitSacCodes(raw) {
     .filter((x) => SAC_CODE_RE.test(x)))];
 }
 
+function formatNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number.toLocaleString('en-US') : '0';
+}
+
 function dbCounts(db) {
   return {
     definitions: Array.isArray(db?.definitions) ? db.definitions.length : 0,
     mpd: Array.isArray(db?.mpd) ? db.mpd.length : 0,
+    workbookRows: Number(db?.sourceWorkbook?.totalRows || 0),
+    workbookNonEmptyRows: Number(db?.sourceWorkbook?.totalNonEmptyRows || 0),
   };
 }
 
 function dbSummary(db) {
   const counts = dbCounts(db);
-  return `${counts.definitions} definitions / ${counts.mpd} example rows`;
+  return `${formatNumber(counts.definitions)} definitions / ${formatNumber(counts.mpd)} valid example rows`;
+}
+
+function workbookRowsSummary(db) {
+  const source = db?.sourceWorkbook;
+  if (!source || !Array.isArray(source.sheets) || !source.sheets.length) return '';
+
+  const sheetRows = source.sheets
+    .map((sheet) => {
+      const total = Number(sheet.totalRows || 0);
+      const nonEmpty = Number(sheet.nonEmptyRows || 0);
+      const rowText = total && total !== nonEmpty
+        ? `${formatNumber(total)} rows, ${formatNumber(nonEmpty)} non-empty`
+        : `${formatNumber(total || nonEmpty)} rows`;
+      return `${sheet.name}: ${rowText}`;
+    })
+    .join('; ');
+
+  const total = source.totalRows ? `${formatNumber(source.totalRows)} workbook rows` : '';
+  const nonEmpty = source.totalNonEmptyRows ? `${formatNumber(source.totalNonEmptyRows)} non-empty rows` : '';
+  const mpdSheet = source.mpdSheetName ? `Examples sheet: ${source.mpdSheetName}` : '';
+  return [total, nonEmpty, mpdSheet, sheetRows].filter(Boolean).join(' / ');
+}
+
+function dataSourceSummary(db) {
+  const rowSummary = workbookRowsSummary(db);
+  return rowSummary
+    ? `${dbSummary(db)}. ${rowSummary}. Evidence references use the workbook sheet and row.`
+    : `${dbSummary(db)}. Evidence references use the workbook sheet and row.`;
 }
 
 function updateDataSourceUi(label = state.dbLabel, badgeText = 'Source') {
@@ -47,9 +83,18 @@ function updateDataSourceUi(label = state.dbLabel, badgeText = 'Source') {
   if (!title || !meta || !badge) return;
 
   title.textContent = label;
-  meta.textContent = state.db ? `${dbSummary(state.db)}. Evidence references use the workbook sheet and row.` : 'No source data loaded.';
+  meta.textContent = state.db ? dataSourceSummary(state.db) : 'No source data loaded.';
   badge.textContent = badgeText;
   badge.className = badgeText.toLowerCase().includes('imported') ? 'pill pill-high' : 'pill';
+}
+
+function clearStoredDb() {
+  try {
+    localStorage.removeItem(DB_STORAGE_KEY);
+    LEGACY_DB_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // Browser storage can be unavailable in private mode.
+  }
 }
 
 function applyDb(db, label, badgeText, persist = false) {
@@ -75,7 +120,7 @@ function loadStoredDb() {
     if (!parsed?.db || !Array.isArray(parsed.db.mpd)) return null;
     return parsed;
   } catch {
-    localStorage.removeItem(DB_STORAGE_KEY);
+    clearStoredDb();
     return null;
   }
 }
@@ -93,15 +138,44 @@ async function loadDb() {
   applyDb(db, 'Repository workbook data', 'Repo data', false);
 }
 
-function sheetRows(workbook, sheetName) {
+function sheetBounds(sheet) {
+  if (!sheet || !sheet['!ref']) {
+    return { firstRow: 1, lastRow: 0, totalRows: 0, totalColumns: 0 };
+  }
+
+  try {
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    return {
+      firstRow: range.s.r + 1,
+      lastRow: range.e.r + 1,
+      totalRows: range.e.r - range.s.r + 1,
+      totalColumns: range.e.c - range.s.c + 1,
+    };
+  } catch {
+    return { firstRow: 1, lastRow: 0, totalRows: 0, totalColumns: 0 };
+  }
+}
+
+function parseSheet(workbook, sheetName) {
   const sheet = workbook.Sheets[sheetName];
-  if (!sheet) return [];
-  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' })
+  const bounds = sheetBounds(sheet);
+  const firstRow = bounds.firstRow || 1;
+  const rows = sheet ? XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' })
     .map((row, index) => ({
-      rowNumber: index + 1,
+      rowNumber: firstRow + index,
       values: row.map((cell) => cleanCell(cell)),
     }))
-    .filter((row) => row.values.some(Boolean));
+    .filter((row) => row.values.some(Boolean)) : [];
+
+  return {
+    name: sheetName,
+    rows,
+    firstRow,
+    lastRow: bounds.lastRow || (rows.length ? rows[rows.length - 1].rowNumber : 0),
+    totalRows: bounds.totalRows || rows.length,
+    totalColumns: bounds.totalColumns,
+    nonEmptyRows: rows.length,
+  };
 }
 
 function findMpdSheet(parsedSheets) {
@@ -163,10 +237,20 @@ function extractMpdRows(sheet, fileName) {
 }
 
 function buildDbFromWorkbook(workbook, fileName) {
-  const parsedSheets = workbook.SheetNames.map((name) => ({ name, rows: sheetRows(workbook, name) }));
+  const parsedSheets = workbook.SheetNames.map((name) => parseSheet(workbook, name));
   const definitions = extractDefinitions(parsedSheets, fileName);
   const mpdSheet = findMpdSheet(parsedSheets);
   const mpd = mpdSheet ? extractMpdRows(mpdSheet, fileName) : [];
+  const sheets = parsedSheets.map((sheet) => ({
+    name: sheet.name,
+    firstRow: sheet.firstRow,
+    lastRow: sheet.lastRow,
+    totalRows: sheet.totalRows,
+    nonEmptyRows: sheet.nonEmptyRows,
+    totalColumns: sheet.totalColumns,
+  }));
+  const totalRows = sheets.reduce((sum, sheet) => sum + Number(sheet.totalRows || 0), 0);
+  const totalNonEmptyRows = sheets.reduce((sum, sheet) => sum + Number(sheet.nonEmptyRows || 0), 0);
 
   if (!definitions.length) {
     throw new Error('No SAC definition rows were found. Expected codes like CAB-CO_CARPFLO-0 in column A and descriptions in column B.');
@@ -180,6 +264,12 @@ function buildDbFromWorkbook(workbook, fileName) {
       fileName,
       importedAt: new Date().toISOString(),
       rule: 'Every recommendation must cite source_ref such as Sheet2 row 12.',
+      sheets,
+      totalRows,
+      totalNonEmptyRows,
+      mpdSheetName: mpdSheet?.name || '',
+      mpdSheetRows: mpdSheet?.totalRows || 0,
+      mpdSheetNonEmptyRows: mpdSheet?.nonEmptyRows || 0,
       definitions: definitions.length,
       examples: mpd.length,
     },
@@ -200,7 +290,7 @@ async function importExcelFile(file) {
   const workbook = XLSX.read(buffer, { type: 'array' });
   const db = buildDbFromWorkbook(workbook, file.name);
   applyDb(db, file.name, 'Imported Excel', true);
-  setMessage(`Loaded ${file.name}: ${dbSummary(db)}. Every match now cites the source sheet and row.`);
+  setMessage(`Loaded ${file.name}: ${dbSummary(db)}. ${workbookRowsSummary(db)}.`);
 }
 
 function combinedInput() {
@@ -269,7 +359,7 @@ function sourceSummary(sources) {
   if (!sources) return '';
   const definitions = Number.isFinite(sources.definitions) ? sources.definitions : 0;
   const mpd = Number.isFinite(sources.mpd) ? sources.mpd : 0;
-  return `${definitions} server definitions / ${mpd} server rows`;
+  return `${formatNumber(definitions)} server definitions / ${formatNumber(mpd)} server rows`;
 }
 
 function modelBudgetSummary(health) {
@@ -623,7 +713,7 @@ function bindEvents() {
 
   $('resetDataBtn').addEventListener('click', async () => {
     try {
-      localStorage.removeItem(DB_STORAGE_KEY);
+      clearStoredDb();
       const res = await fetch('/db.json');
       if (!res.ok) throw new Error('Failed to load repository data.');
       const db = await res.json();
