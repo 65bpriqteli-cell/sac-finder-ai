@@ -21,7 +21,15 @@ The site can use the user's local workbook without committing the workbook into 
 2. Click `Load Excel data`.
 3. Select `All data .xlsx`.
 4. The browser reads the workbook locally, extracts SAC definitions from `Sheet1`, extracts examples from `Sheet2`, and stores the parsed data in browser `localStorage`.
-5. Run a SAC search. Local matches and live AI responses will cite where the example came from, for example `All data .xlsx / Sheet2 row 13`.
+5. The active source panel shows both the extracted counts and the exact workbook row counts by sheet.
+6. Run a SAC search. Local matches and live AI responses will cite where the example came from, for example `All data .xlsx / Sheet2 row 13`.
+
+The row count display separates:
+
+- `workbook rows`: rows covered by each Excel sheet range.
+- `non-empty rows`: rows where the browser found at least one non-empty cell.
+- `valid example rows`: rows that have a usable description plus valid SAC code text.
+- `definitions`: valid SAC definition rows extracted from the workbook.
 
 Only the compact matched evidence rows are sent to `/api/agent` for AI review. The full workbook stays in the browser unless the user selects it again on another device/browser.
 
