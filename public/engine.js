@@ -6,8 +6,8 @@
     global.SACEngine = factory();
   }
 })(typeof window !== 'undefined' ? window : globalThis, function () {
-  const TOP_SEGMENT_CANDIDATES = 8;
-  const TOP_FINAL_CANDIDATES = 12;
+  const TOP_SEGMENT_CANDIDATES = 10;
+  const TOP_FINAL_CANDIDATES = 14;
 
   const OP_PATTERNS = [
     { name: 'remove', regex: /\b(remove|removal|rmvl|detach|strip\s*out|take\s*out)\b/i },
@@ -47,6 +47,25 @@
     'panel','access panel','cover','hatch','fairing','door panel','trim','lining','liner','open panel','gain access',
     'access door','sidewall','ceiling panel','floor panel','cover panel','remove lining','open trim','panel door',
     'floorboard','shroud','cowling','cowl','closeout panel','access cover'
+  ];
+
+  const COMPONENT_HINTS = [
+    'panel','door','lining','insulation','valve','pump','filter','fan','actuator','duct','pipe','hose','cable','connector',
+    'bracket','fairing','trim','liner','cover','hatch','seat','toilet','sidewall','ceiling','floor','frame','rib','stringer'
+  ];
+
+  const BROAD_ROW_PATTERNS = [
+    /\bfrom all\b/i,
+    /\ball toilets\b/i,
+    /\ball doors\b/i,
+    /\ball panels\b/i,
+    /\ball units\b/i,
+    /\ball assemblies\b/i,
+    /\ball locations\b/i,
+    /\ball zones\b/i,
+    /\bapplicable aircraft\b/i,
+    /\bgeneral information\b/i,
+    /\ball\b/i
   ];
 
   function normalizeText(text) {
@@ -197,6 +216,49 @@
     return pairs;
   }
 
+  function operationPriority(opNames) {
+    if (!Array.isArray(opNames) || !opNames.length) return 0;
+    if (opNames.some((name) => ['remove', 'open', 'disconnect', 'access'].includes(name))) return 18;
+    if (opNames.some((name) => ['install', 'close'].includes(name))) return 12;
+    if (opNames.some((name) => ['inspect', 'repair', 'replace', 'safety'].includes(name))) return 8;
+    return 0;
+  }
+
+  function criticalTokenStats(tokens, sourceTokens) {
+    const criticalTokens = tokens.filter((token) => /^(lh|rh|fwd|aft|door|panel)$/i.test(token)
+      || /^(fr\d+[a-z0-9-]*)$/i.test(token)
+      || /^(fin\d+[a-z0-9-]*)$/i.test(token)
+      || /^(rib\d+[a-z0-9-]*)$/i.test(token)
+      || /^(\d+[a-z]{1,3})$/i.test(token)
+      || /^(\d{2,4}[a-z0-9]{0,3})$/i.test(token));
+
+    const matched = criticalTokens.filter((token) => sourceTokens.has(token));
+    return {
+      total: criticalTokens.length,
+      matched: matched.length,
+      coverage: criticalTokens.length ? matched.length / criticalTokens.length : 0
+    };
+  }
+
+  function componentHits(tokens, sourceTokens) {
+    return tokens.filter((token) => COMPONENT_HINTS.includes(token) && sourceTokens.has(token)).length;
+  }
+
+  function rowBroadnessPenalty(sourceText, segment, codeCount) {
+    const sourceNorm = normalizeText(sourceText);
+    const segmentNorm = normalizeText(segment);
+    let penalty = 0;
+
+    if (codeCount > 1) penalty += 12;
+    if (BROAD_ROW_PATTERNS.some((pattern) => pattern.test(sourceNorm)) && !BROAD_ROW_PATTERNS.some((pattern) => pattern.test(segmentNorm))) {
+      penalty += 14;
+    }
+    if (sourceNorm.includes('all ') && !segmentNorm.includes('all ')) penalty += 8;
+    if (sourceNorm.includes('assembly') || sourceNorm.includes('assemblies')) penalty += 5;
+
+    return penalty;
+  }
+
   function scoreRowForSegment(searchRow, segment, ops, tokens, accessLike) {
     const sourceText = searchRow.text || '';
     const sourceNorm = normalizeText(sourceText);
@@ -207,23 +269,33 @@
     const accessMatch = accessLike && detectAccessLike(sourceText);
     const bigrams = phraseBigrams(tokens);
     const bigramHits = bigrams.filter((pair) => sourceNorm.includes(pair)).length;
-    const codeLikeHits = tokens.filter((token) => /(\d|fr|fin|rib|lh|rh|fwd|aft|door|panel)/i.test(token) && sourceTokens.has(token)).length;
     const exactPhrase = normalizeText(segment) && sourceNorm.includes(normalizeText(segment));
     const strongPhrase = tokens.length >= 2 && bigramHits > 0;
+    const criticalStats = criticalTokenStats(tokens, sourceTokens);
+    const matchedComponents = componentHits(tokens, sourceTokens);
+    const broadPenalty = rowBroadnessPenalty(sourceText, segment, searchRow.codes.length);
 
     let score = matchedTokenCount * 12;
-    if (tokenCoverage >= 0.6) score += 18;
-    if (tokenCoverage >= 0.8) score += 12;
-    if (opMatch) score += 24;
-    if (accessMatch) score += 10;
-    if (strongPhrase) score += Math.min(18, bigramHits * 6);
-    if (codeLikeHits) score += Math.min(18, codeLikeHits * 6);
-    if (exactPhrase) score += 30;
+    if (tokenCoverage >= 0.5) score += 12;
+    if (tokenCoverage >= 0.7) score += 16;
+    if (tokenCoverage >= 0.85) score += 12;
+    if (opMatch) score += 20 + operationPriority(ops);
+    if (accessMatch) score += 14;
+    if (strongPhrase) score += Math.min(20, bigramHits * 6);
+    if (criticalStats.matched) score += Math.min(30, criticalStats.matched * 10);
+    if (criticalStats.coverage === 1 && criticalStats.total > 0) score += 10;
+    if (matchedComponents) score += Math.min(18, matchedComponents * 6);
+    if (exactPhrase) score += 28;
+    score -= broadPenalty;
 
     let matchType = 'related';
-    if (opMatch && tokenCoverage === 1) matchType = 'exact';
-    else if ((opMatch && tokenCoverage >= 0.7) || exactPhrase) matchType = 'strong';
-    else if (tokenCoverage < 0.34 && !codeLikeHits && !strongPhrase) matchType = 'weak';
+    if (opMatch && tokenCoverage === 1 && (criticalStats.total === 0 || criticalStats.coverage === 1) && broadPenalty <= 4) {
+      matchType = 'exact';
+    } else if ((opMatch && tokenCoverage >= 0.7) || exactPhrase || (criticalStats.coverage >= 0.75 && criticalStats.total > 0)) {
+      matchType = 'strong';
+    } else if (tokenCoverage < 0.34 && criticalStats.matched === 0 && !strongPhrase && matchedComponents < 1) {
+      matchType = 'weak';
+    }
 
     return {
       score,
@@ -233,7 +305,10 @@
       opMatch,
       accessMatch,
       bigramHits,
-      codeLikeHits,
+      criticalHits: criticalStats.matched,
+      criticalCoverage: criticalStats.coverage,
+      matchedComponents,
+      broadPenalty,
       sourceText
     };
   }
@@ -258,8 +333,23 @@
       accessMatch: scoring.accessMatch,
       opMatch: scoring.opMatch,
       bigramHits: scoring.bigramHits,
-      codeLikeHits: scoring.codeLikeHits
+      criticalHits: scoring.criticalHits,
+      criticalCoverage: scoring.criticalCoverage,
+      matchedComponents: scoring.matchedComponents,
+      broadPenalty: scoring.broadPenalty
     }));
+  }
+
+  function sortCandidates(left, right) {
+    const typeWeight = { exact: 3, strong: 2, related: 1, weak: 0 };
+    const leftWeight = typeWeight[left.matchType] || 0;
+    const rightWeight = typeWeight[right.matchType] || 0;
+    if (leftWeight !== rightWeight) return rightWeight - leftWeight;
+    if ((right.criticalHits || 0) !== (left.criticalHits || 0)) return (right.criticalHits || 0) - (left.criticalHits || 0);
+    if ((right.opMatch ? 1 : 0) !== (left.opMatch ? 1 : 0)) return (right.opMatch ? 1 : 0) - (left.opMatch ? 1 : 0);
+    if ((right.accessMatch ? 1 : 0) !== (left.accessMatch ? 1 : 0)) return (right.accessMatch ? 1 : 0) - (left.accessMatch ? 1 : 0);
+    if (right.score !== left.score) return right.score - left.score;
+    return left.code.localeCompare(right.code);
   }
 
   function segmentCandidates(db, segment) {
@@ -301,7 +391,7 @@
 
     const candidates = collectSearchRows(db)
       .flatMap((searchRow) => expandCandidate(searchRow, segment, ops, tokens, accessLike))
-      .sort((left, right) => right.score - left.score || left.code.localeCompare(right.code))
+      .sort(sortCandidates)
       .slice(0, TOP_SEGMENT_CANDIDATES);
 
     const exactMatches = candidates.filter((candidate) => candidate.matchType === 'exact');
@@ -357,14 +447,18 @@
           exact: false,
           evidenceCount: 0,
           source: null,
-          matchType: candidate.matchType
+          matchType: candidate.matchType,
+          criticalHits: 0,
+          broadPenalty: 0
         };
 
         current.score = Math.max(current.score, candidate.score) + 1;
         current.exact = current.exact || candidate.matchType === 'exact';
         current.evidenceCount += 1;
+        current.criticalHits = Math.max(current.criticalHits, candidate.criticalHits || 0);
+        current.broadPenalty = Math.max(current.broadPenalty, candidate.broadPenalty || 0);
 
-        if (!current.source || candidate.score > current.source.score) {
+        if (!current.source || sortCandidates(candidate, current.source) < 0) {
           current.source = candidate;
           current.matchType = candidate.matchType;
         }
@@ -383,12 +477,20 @@
           score: entry.score,
           evidenceCount: entry.evidenceCount,
           matchType: entry.matchType,
+          criticalHits: entry.criticalHits,
+          broadPenalty: entry.broadPenalty,
           source: entry.source
         };
       })
       .sort((left, right) => {
         if (left.exact !== right.exact) return left.exact ? -1 : 1;
+        const typeWeight = { exact: 3, strong: 2, related: 1, weak: 0 };
+        if ((typeWeight[left.matchType] || 0) !== (typeWeight[right.matchType] || 0)) {
+          return (typeWeight[right.matchType] || 0) - (typeWeight[left.matchType] || 0);
+        }
+        if ((right.criticalHits || 0) !== (left.criticalHits || 0)) return (right.criticalHits || 0) - (left.criticalHits || 0);
         if (right.score !== left.score) return right.score - left.score;
+        if ((left.broadPenalty || 0) !== (right.broadPenalty || 0)) return (left.broadPenalty || 0) - (right.broadPenalty || 0);
         return left.code.localeCompare(right.code);
       })
       .slice(0, TOP_FINAL_CANDIDATES);
