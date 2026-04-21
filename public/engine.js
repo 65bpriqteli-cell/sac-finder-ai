@@ -10,10 +10,10 @@
   const TOP_FINAL_CANDIDATES = 14;
 
   const OP_PATTERNS = [
-    { name: 'remove', regex: /\b(remove|removal|rmvl|detach|strip\s*out|take\s*out)\b/i },
+    { name: 'remove', regex: /\b(remove|removal|rmvl|detach|strip\s*out|take\s*out|rem)\b/i },
     { name: 'open', regex: /\b(open|open\s*up|unfasten)\b/i },
     { name: 'disconnect', regex: /\b(disconnect|isolate|deactivate|de-energize|deenergize)\b/i },
-    { name: 'install', regex: /\b(install|installation|inst|fit|reinstall|re-fit|refit)\b/i },
+    { name: 'install', regex: /\b(install|installation|inst|fit|reinstall|re-fit|refit|ins)\b/i },
     { name: 'close', regex: /\b(close|reclose|secure|fasten)\b/i },
     { name: 'inspect', regex: /\b(inspect|inspection|check|gvi|dvi|examine|test|verify)\b/i },
     { name: 'repair', regex: /\b(repair|rework|restore|blend|rectify)\b/i },
@@ -40,7 +40,8 @@
     'zone','general','detail','detailed','visual','special','internal','external','installed','condition','operation',
     'operator','operators','depending','environment','experience','recommended','guidance','previous','accomplishment',
     'valid','instead','refer','section','introduction','additional','level','managed','aircraft','job','step',
-    'procedure','perform','work','done','then','than','there','here','also','should','shall'
+    'procedure','perform','work','done','then','than','there','here','also','should','shall',
+    'mhs','quoted','accordance','included','jic','sb'
   ]);
 
   const ACCESS_HINTS = [
@@ -51,7 +52,8 @@
 
   const COMPONENT_HINTS = [
     'panel','door','lining','insulation','valve','pump','filter','fan','actuator','duct','pipe','hose','cable','connector',
-    'bracket','fairing','trim','liner','cover','hatch','seat','toilet','sidewall','ceiling','floor','frame','rib','stringer'
+    'bracket','fairing','trim','liner','cover','hatch','seat','toilet','sidewall','ceiling','floor','frame','rib','stringer',
+    'stabilizers','stabilizer','elevator','elevators','fittings','fitting'
   ];
 
   const BROAD_ROW_PATTERNS = [
@@ -87,7 +89,16 @@
 
   function detectOperations(text) {
     const raw = text || '';
-    return unique(OP_PATTERNS.filter((op) => op.regex.test(raw)).map((op) => op.name));
+    const detected = OP_PATTERNS.filter((op) => op.regex.test(raw)).map((op) => op.name);
+
+    if (/\brem\s*\/\s*ins\b|\br\s*\/\s*i\b/i.test(raw)) {
+      detected.push('remove', 'install');
+    }
+    if (/\belevators?\s+rem\s*\/\s*ins\s+included\b/i.test(raw)) {
+      detected.push('remove', 'install');
+    }
+
+    return unique(detected);
   }
 
   function detectOperation(text) {
@@ -117,6 +128,7 @@
     return tokenize(text).filter((token) => {
       if (!token || token.length <= 1) return false;
       if (STOP_WORDS.has(token)) return false;
+      if (/^(rem|ins|rem\/ins|r\/i)$/i.test(token)) return false;
       if (ops.some((opName) => {
         const pattern = OP_PATTERNS.find((entry) => entry.name === opName);
         return pattern ? pattern.regex.test(token) : false;
@@ -240,6 +252,16 @@
     };
   }
 
+  function taskReferenceStats(tokens, sourceTokens) {
+    const taskRefTokens = tokens.filter((token) => /(a320fam|a320-\d{2}-\d{4}|ih-a320fam|l-\d+-a320fam|jic|conf\d|insp)/i.test(token));
+    const matched = taskRefTokens.filter((token) => sourceTokens.has(token));
+    return {
+      total: taskRefTokens.length,
+      matched: matched.length,
+      coverage: taskRefTokens.length ? matched.length / taskRefTokens.length : 0
+    };
+  }
+
   function componentHits(tokens, sourceTokens) {
     return tokens.filter((token) => COMPONENT_HINTS.includes(token) && sourceTokens.has(token)).length;
   }
@@ -272,6 +294,7 @@
     const exactPhrase = normalizeText(segment) && sourceNorm.includes(normalizeText(segment));
     const strongPhrase = tokens.length >= 2 && bigramHits > 0;
     const criticalStats = criticalTokenStats(tokens, sourceTokens);
+    const taskRefStats = taskReferenceStats(tokens, sourceTokens);
     const matchedComponents = componentHits(tokens, sourceTokens);
     const broadPenalty = rowBroadnessPenalty(sourceText, segment, searchRow.codes.length);
 
@@ -284,6 +307,8 @@
     if (strongPhrase) score += Math.min(20, bigramHits * 6);
     if (criticalStats.matched) score += Math.min(30, criticalStats.matched * 10);
     if (criticalStats.coverage === 1 && criticalStats.total > 0) score += 10;
+    if (taskRefStats.matched) score += Math.min(36, taskRefStats.matched * 12);
+    if (taskRefStats.coverage === 1 && taskRefStats.total > 0) score += 12;
     if (matchedComponents) score += Math.min(18, matchedComponents * 6);
     if (exactPhrase) score += 28;
     score -= broadPenalty;
@@ -291,9 +316,9 @@
     let matchType = 'related';
     if (opMatch && tokenCoverage === 1 && (criticalStats.total === 0 || criticalStats.coverage === 1) && broadPenalty <= 4) {
       matchType = 'exact';
-    } else if ((opMatch && tokenCoverage >= 0.7) || exactPhrase || (criticalStats.coverage >= 0.75 && criticalStats.total > 0)) {
+    } else if ((opMatch && tokenCoverage >= 0.7) || exactPhrase || (criticalStats.coverage >= 0.75 && criticalStats.total > 0) || (taskRefStats.coverage >= 0.75 && taskRefStats.total > 0)) {
       matchType = 'strong';
-    } else if (tokenCoverage < 0.34 && criticalStats.matched === 0 && !strongPhrase && matchedComponents < 1) {
+    } else if (tokenCoverage < 0.34 && criticalStats.matched === 0 && taskRefStats.matched === 0 && !strongPhrase && matchedComponents < 1) {
       matchType = 'weak';
     }
 
@@ -307,6 +332,8 @@
       bigramHits,
       criticalHits: criticalStats.matched,
       criticalCoverage: criticalStats.coverage,
+      taskRefHits: taskRefStats.matched,
+      taskRefCoverage: taskRefStats.coverage,
       matchedComponents,
       broadPenalty,
       sourceText
@@ -335,6 +362,8 @@
       bigramHits: scoring.bigramHits,
       criticalHits: scoring.criticalHits,
       criticalCoverage: scoring.criticalCoverage,
+      taskRefHits: scoring.taskRefHits,
+      taskRefCoverage: scoring.taskRefCoverage,
       matchedComponents: scoring.matchedComponents,
       broadPenalty: scoring.broadPenalty
     }));
@@ -345,6 +374,7 @@
     const leftWeight = typeWeight[left.matchType] || 0;
     const rightWeight = typeWeight[right.matchType] || 0;
     if (leftWeight !== rightWeight) return rightWeight - leftWeight;
+    if ((right.taskRefHits || 0) !== (left.taskRefHits || 0)) return (right.taskRefHits || 0) - (left.taskRefHits || 0);
     if ((right.criticalHits || 0) !== (left.criticalHits || 0)) return (right.criticalHits || 0) - (left.criticalHits || 0);
     if ((right.opMatch ? 1 : 0) !== (left.opMatch ? 1 : 0)) return (right.opMatch ? 1 : 0) - (left.opMatch ? 1 : 0);
     if ((right.accessMatch ? 1 : 0) !== (left.accessMatch ? 1 : 0)) return (right.accessMatch ? 1 : 0) - (left.accessMatch ? 1 : 0);
@@ -449,6 +479,7 @@
           source: null,
           matchType: candidate.matchType,
           criticalHits: 0,
+          taskRefHits: 0,
           broadPenalty: 0
         };
 
@@ -456,6 +487,7 @@
         current.exact = current.exact || candidate.matchType === 'exact';
         current.evidenceCount += 1;
         current.criticalHits = Math.max(current.criticalHits, candidate.criticalHits || 0);
+        current.taskRefHits = Math.max(current.taskRefHits, candidate.taskRefHits || 0);
         current.broadPenalty = Math.max(current.broadPenalty, candidate.broadPenalty || 0);
 
         if (!current.source || sortCandidates(candidate, current.source) < 0) {
@@ -478,6 +510,7 @@
           evidenceCount: entry.evidenceCount,
           matchType: entry.matchType,
           criticalHits: entry.criticalHits,
+          taskRefHits: entry.taskRefHits,
           broadPenalty: entry.broadPenalty,
           source: entry.source
         };
@@ -488,6 +521,7 @@
         if ((typeWeight[left.matchType] || 0) !== (typeWeight[right.matchType] || 0)) {
           return (typeWeight[right.matchType] || 0) - (typeWeight[left.matchType] || 0);
         }
+        if ((right.taskRefHits || 0) !== (left.taskRefHits || 0)) return (right.taskRefHits || 0) - (left.taskRefHits || 0);
         if ((right.criticalHits || 0) !== (left.criticalHits || 0)) return (right.criticalHits || 0) - (left.criticalHits || 0);
         if (right.score !== left.score) return right.score - left.score;
         if ((left.broadPenalty || 0) !== (right.broadPenalty || 0)) return (left.broadPenalty || 0) - (right.broadPenalty || 0);
