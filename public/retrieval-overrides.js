@@ -37,7 +37,11 @@ function renderLocalResult(result) {
   $('candidateList').innerHTML = ranked.map((item) => {
     const source = item.source ? `${item.source.source} / ${item.source.ref}` : EMPTY_VALUE;
     const tag = candidateTag(item);
-    const scoreText = item.score ? `Score ${Math.round(item.score)} • ${item.evidenceCount || 1} row(s)` : 'No score';
+    const scoreBits = [];
+    if (item.score) scoreBits.push(`Score ${Math.round(item.score)}`);
+    if (item.evidenceCount) scoreBits.push(`${item.evidenceCount} row(s)`);
+    if (item.criticalHits) scoreBits.push(`${item.criticalHits} critical hit(s)`);
+    const scoreText = scoreBits.join(' • ') || 'No score';
     return `
       <article class="candidate-item">
         <div class="candidate-top">
@@ -130,6 +134,8 @@ function clientEvidenceForAi(localResult) {
         source_ref: evidenceRef,
         text: match.text || '',
         matched_segment: segment.segment || '',
+        match_type: match.matchType || 'related',
+        score: Number.isFinite(Number(match.score)) ? Number(match.score) : null,
       });
     }
   }
