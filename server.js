@@ -9,9 +9,12 @@ const DB_PATH = path.join(PUBLIC_DIR, 'db.json');
 const ENV_PATH = path.join(__dirname, '.env');
 const MAX_BODY_BYTES = 3 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
-const MAX_CLIENT_EVIDENCE_ROWS = 120;
-const MAX_CLIENT_DEFINITIONS = 160;
+const MAX_CLIENT_EVIDENCE_ROWS = 40;
+const MAX_CLIENT_DEFINITIONS = 60;
 const MAX_FIELD_CHARS = 900;
+const MAX_PROMPT_EVIDENCE_ROWS = 20;
+const MAX_PROMPT_DEFINITIONS = 24;
+const MAX_PROMPT_SERVER_MPD = 12;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -56,14 +59,10 @@ const WORKBOOK_SEARCH_METHOD = [
   'Search priority order: exact task title; exact phrase match; exact removal/access phrase; exact panel, door, or access code; exact FIN; exact FR plus area plus side; exact component wording; then strongest closest workbook wording only if no exact match exists.',
   'For access jobs, search Get Access, Open, Remove, Disconnect, panel codes, door numbers, FR, LH/RH first.',
   'For inspection jobs, first look for the exact inspection title; if it is not found, match by exact area or component wording.',
-  'For avionics door jobs, prioritize exact door number such as 811, 812, 822, or 824.',
-  'For wing panel jobs, prioritize exact panel IDs first, then rib range.',
   'For cabin lining, insulation, or panel removal, do not claim an exact match unless the same removal wording exists in the workbook.',
   'Use client-imported workbook rows first when they exist. They are ranked retrieval candidates, not guaranteed matches.',
   'Rows with match_type exact are stronger than strong, and strong are stronger than related, but all must still be verified against the actual text on that row.',
-  'If the workbook has similar but not identical wording, report it as closest, not exact.',
-  'If something is found only in the workbook and not in the user text, say that clearly.',
-  'If something is found only in the user text and not in the workbook, say that clearly.'
+  'If the workbook has similar but not identical wording, report it as closest, not exact.'
 ];
 
 function send(res, status, body, type = 'text/plain; charset=utf-8') {
@@ -98,18 +97,14 @@ function loadDotEnv(filePath) {
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
-
     const eqIndex = trimmed.indexOf('=');
     if (eqIndex === -1) continue;
-
     const key = trimmed.slice(0, eqIndex).trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
     if (Object.prototype.hasOwnProperty.call(process.env, key)) continue;
-
     let value = trimmed.slice(eqIndex + 1).trim();
     const quoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
     if (quoted) value = value.slice(1, -1);
-
     process.env[key] = value;
   }
 }
@@ -144,11 +139,9 @@ function asString(value, limit = MAX_FIELD_CHARS) {
 function normalizeSourceRef(row, fallbackSource, fallbackPrefix) {
   const explicitRef = asString(row?.source_ref || row?.ref, 160);
   if (explicitRef) return explicitRef;
-
   const source = asString(row?.source || fallbackSource, 120) || fallbackSource;
   const rowNumber = asString(row?.row || row?.row_number, 40);
   if (rowNumber) return `${source} Row ${rowNumber}`;
-
   const code = asString(row?.code || row?.sac || row?.['SAC CODE'], 80);
   return code ? `${fallbackPrefix} ${code}` : fallbackPrefix;
 }
@@ -157,24 +150,14 @@ function normalizeServerDefinition(row) {
   const code = asString(row?.code || row?.sac || row?.['SAC CODE'], 80).toUpperCase();
   const description = asString(row?.description || row?.text || row?.DESCRIPTION, MAX_FIELD_CHARS);
   const source = asString(row?.source, 120) || 'SAC Definitions';
-  return {
-    code,
-    description,
-    source,
-    source_ref: normalizeSourceRef(row, source, 'SAC Definition')
-  };
+  return { code, description, source, source_ref: normalizeSourceRef(row, source, 'SAC Definition') };
 }
 
 function normalizeServerMpd(row) {
   const code = asString(row?.code || row?.sac || row?.['SAC CODE'], 80).toUpperCase();
   const text = asString(row?.text || row?.description || row?.DESCRIPTION, MAX_FIELD_CHARS);
   const source = asString(row?.source, 120) || 'A320 MPD';
-  return {
-    code,
-    text,
-    source,
-    source_ref: normalizeSourceRef(row, source, 'A320 MPD')
-  };
+  return { code, text, source, source_ref: normalizeSourceRef(row, source, 'A320 MPD') };
 }
 
 function normalizeClientEvidence(input) {
@@ -193,16 +176,7 @@ function normalizeClientEvidence(input) {
     const matchedSegment = asString(row?.matched_segment || row?.matchedSegment || row?.segment, 500);
     const matchType = asString(row?.match_type || row?.matchType, 40).toLowerCase();
     const score = Number.isFinite(Number(row?.score)) ? Number(row.score) : null;
-
-    return {
-      code,
-      text,
-      source,
-      source_ref: sourceRef,
-      matched_segment: matchedSegment,
-      match_type: matchType,
-      score
-    };
+    return { code, text, source, source_ref: sourceRef, matched_segment: matchedSegment, match_type: matchType, score };
   }).filter((row) => row.code && row.text && row.source_ref) : [];
 
   const definitions = Array.isArray(data.definitions) ? data.definitions.slice(0, MAX_CLIENT_DEFINITIONS).map((row) => ({
@@ -212,30 +186,15 @@ function normalizeClientEvidence(input) {
     source_ref: asString(row?.source_ref || row?.ref, 160)
   })).filter((row) => row.code && row.description) : [];
 
-  return {
-    dataSource,
-    sourceWorkbook,
-    rows,
-    definitions,
-    limits: {
-      maxRows: MAX_CLIENT_EVIDENCE_ROWS,
-      maxDefinitions: MAX_CLIENT_DEFINITIONS
-    }
-  };
+  return { dataSource, sourceWorkbook, rows, definitions, limits: { maxRows: MAX_CLIENT_EVIDENCE_ROWS, maxDefinitions: MAX_CLIENT_DEFINITIONS } };
 }
 
 function uniqueEvidenceRefs(sources) {
   const refs = new Set();
-  for (const row of sources.definitions || []) {
-    if (row.source_ref) refs.add(row.source_ref);
-  }
-  for (const row of sources.mpd || []) {
-    if (row.source_ref) refs.add(row.source_ref);
-  }
-  for (const row of sources.clientEvidence?.rows || []) {
-    if (row.source_ref) refs.add(row.source_ref);
-  }
-  return Array.from(refs).slice(0, 320);
+  for (const row of sources.definitions || []) if (row.source_ref) refs.add(row.source_ref);
+  for (const row of sources.mpd || []) if (row.source_ref) refs.add(row.source_ref);
+  for (const row of sources.clientEvidence?.rows || []) if (row.source_ref) refs.add(row.source_ref);
+  return Array.from(refs).slice(0, 220);
 }
 
 function getRestrictedSources(clientEvidenceInput = null) {
@@ -268,23 +227,15 @@ function supportsReasoning(model) {
 }
 
 function extractResponseText(data) {
-  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-    return data.output_text;
-  }
+  if (typeof data?.output_text === 'string' && data.output_text.trim()) return data.output_text;
   if (Array.isArray(data?.output)) {
     const parts = [];
     for (const item of data.output) {
       if (Array.isArray(item?.content)) {
         for (const content of item.content) {
-          if ((content?.type === 'output_text' || content?.type === 'text') && typeof content.text === 'string') {
-            parts.push(content.text);
-          }
-          if (typeof content === 'string') {
-            parts.push(content);
-          }
-          if (content?.type === 'refusal' && typeof content.refusal === 'string') {
-            throw new Error(`OpenAI refusal: ${content.refusal}`);
-          }
+          if ((content?.type === 'output_text' || content?.type === 'text') && typeof content.text === 'string') parts.push(content.text);
+          if (typeof content === 'string') parts.push(content);
+          if (content?.type === 'refusal' && typeof content.refusal === 'string') throw new Error(`OpenAI refusal: ${content.refusal}`);
         }
       }
     }
@@ -306,36 +257,26 @@ function usageSummary(usage) {
 
 function assertCompleteResponse(data, content) {
   if (content) return;
-
   const reason = data?.incomplete_details?.reason;
   if (data?.status === 'incomplete' && reason === 'max_output_tokens') {
     throw new Error(`OpenAI ran out of max_output_tokens before producing final JSON. Increase OPENAI_MAX_OUTPUT_TOKENS or lower OPENAI_REASONING_EFFORT. ${usageSummary(data.usage)}`);
   }
-
   const outputTypes = Array.isArray(data?.output) ? data.output.map((item) => item?.type || 'unknown').join(', ') : 'none';
   throw new Error(`No model response content. status=${data?.status || 'unknown'} incomplete_reason=${reason || 'none'} output_types=${outputTypes} ${usageSummary(data?.usage)}`);
 }
 
 async function postResponsesApi(payload) {
   const { apiKey, baseUrl } = getOpenAIConfig();
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY is missing in the runtime environment.');
-  }
-
+  if (!apiKey) throw new Error('OPENAI_API_KEY is missing in the runtime environment.');
   const response = await fetch(`${baseUrl}/responses`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(payload)
   });
-
   if (!response.ok) {
     const txt = await response.text();
     throw new Error(`OpenAI error: ${response.status} ${txt}`);
   }
-
   return await response.json();
 }
 
@@ -350,20 +291,7 @@ function buildSacSchema() {
       recommendation: { type: 'string' },
       why: { type: 'array', items: { type: 'string' } },
       checks: { type: 'array', items: { type: 'string' } },
-      codes: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['code', 'role', 'note', 'evidence_ref'],
-          properties: {
-            code: { type: 'string' },
-            role: { type: 'string' },
-            note: { type: 'string' },
-            evidence_ref: { type: 'string' }
-          }
-        }
-      },
+      codes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['code', 'role', 'note', 'evidence_ref'], properties: { code: { type: 'string' }, role: { type: 'string' }, note: { type: 'string' }, evidence_ref: { type: 'string' } } } },
       trace: { type: 'array', items: { type: 'string' } }
     }
   };
@@ -371,7 +299,7 @@ function buildSacSchema() {
 
 function buildClientEvidencePreview(clientEvidence) {
   const rows = Array.isArray(clientEvidence?.rows) ? clientEvidence.rows : [];
-  return rows.map((row, index) => ({
+  return rows.slice(0, MAX_PROMPT_EVIDENCE_ROWS).map((row, index) => ({
     rank: index + 1,
     code: row.code,
     source_ref: row.source_ref,
@@ -382,7 +310,61 @@ function buildClientEvidencePreview(clientEvidence) {
   }));
 }
 
+function slimLocalResult(localResult) {
+  const result = localResult && typeof localResult === 'object' ? localResult : {};
+  return {
+    decision: result?.final?.decision || 'NO_SAC',
+    decisionText: result?.final?.decisionText || '',
+    ranked: Array.isArray(result?.final?.ranked) ? result.final.ranked.slice(0, 8).map((item) => ({
+      code: item.code,
+      matchType: item.matchType,
+      score: item.score,
+      source_ref: item?.source?.ref || ''
+    })) : [],
+    segments: Array.isArray(result?.segments) ? result.segments.slice(0, 8).map((segment) => ({
+      segment: segment.segment,
+      decision: segment.decision,
+      op: segment.op,
+      ops: Array.isArray(segment.ops) ? segment.ops.slice(0, 4) : [],
+      tokens: Array.isArray(segment.tokens) ? segment.tokens.slice(0, 10) : [],
+      topMatches: Array.isArray(segment.candidateMatches) ? segment.candidateMatches.slice(0, 2).map((match) => ({
+        code: match.code,
+        matchType: match.matchType,
+        score: match.score,
+        source_ref: match.ref || match.source_ref || ''
+      })) : []
+    })) : []
+  };
+}
+
+function pickRelevantDefinitions(sources, previewRows) {
+  const codes = new Set(previewRows.map((row) => row.code).filter(Boolean));
+  const defs = [];
+  for (const row of sources.clientEvidence?.definitions || []) {
+    if (codes.has(row.code)) defs.push(row);
+    if (defs.length >= MAX_PROMPT_DEFINITIONS) return defs;
+  }
+  for (const row of sources.definitions || []) {
+    if (codes.has(row.code) && !defs.some((item) => item.code === row.code)) defs.push(row);
+    if (defs.length >= MAX_PROMPT_DEFINITIONS) return defs;
+  }
+  return defs.slice(0, MAX_PROMPT_DEFINITIONS);
+}
+
+function pickRelevantServerMpd(sources, previewRows) {
+  const codes = new Set(previewRows.map((row) => row.code).filter(Boolean));
+  const rows = [];
+  for (const row of sources.mpd || []) {
+    if (codes.has(row.code)) rows.push(row);
+    if (rows.length >= MAX_PROMPT_SERVER_MPD) break;
+  }
+  return rows;
+}
+
 function buildPlannerPrompt(taskText, localResult, sources) {
+  const previewRows = buildClientEvidencePreview(sources.clientEvidence);
+  const relevantDefinitions = pickRelevantDefinitions(sources, previewRows);
+  const relevantServerMpd = pickRelevantServerMpd(sources, previewRows);
   return [
     'MISSION',
     'Search the supplied workbook evidence for SAC guidance for the user task. Act like a strict workbook search engine, not a general aircraft assistant.',
@@ -393,33 +375,38 @@ function buildPlannerPrompt(taskText, localResult, sources) {
     'WORKBOOK SEARCH METHOD',
     ...WORKBOOK_SEARCH_METHOD.map((rule, index) => `${index + 1}. ${rule}`),
     '',
-    'REQUIRED WORKING ORDER',
-    '1. Extract only confirmed work from TASK TEXT.',
-    '2. Ignore conditional lines by default.',
-    '3. Check the ranked client workbook candidates first.',
-    '4. Verify against exact workbook wording on the supplied row.',
-    '5. Release a SAC only if that same row proves it.',
-    '',
     'DECISION CONTRACT',
     '- MATCH: exact user wording, exact panel/access code, or exact row-supported wording is present in supplied source rows.',
     '- REVIEW: the closest row is grouped, broader, ambiguous, or contains multiple SACs without exact mapping.',
     '- NO_SAC: supplied sources do not support a code release.',
     '',
-    'EVIDENCE REFERENCE CONTRACT',
-    '- Each codes[].evidence_ref value must be copied from ALLOWED EVIDENCE REFERENCES.',
-    '- If no allowed evidence reference supports a code, do not return that code.',
-    '- For client-imported workbook matches, cite the exact source_ref such as Sheet2 row 13.',
+    'TASK TEXT',
+    taskText,
+    '',
+    'ALLOWED EVIDENCE REFERENCES',
+    JSON.stringify(sources.evidenceRefs),
+    '',
+    'SLIM LOCAL RETRIEVAL HELPER',
+    JSON.stringify(slimLocalResult(localResult)),
+    '',
+    'TOP CLIENT WORKBOOK CANDIDATES',
+    JSON.stringify(previewRows),
+    '',
+    'RELEVANT DEFINITIONS',
+    JSON.stringify(relevantDefinitions),
+    '',
+    'RELEVANT SERVER MPD ROWS',
+    JSON.stringify(relevantServerMpd),
     '',
     'RECOMMENDATION OUTPUT CONTRACT',
     'Put the short, copyable user answer in recommendation using these labels in plain text:',
     'My text:',
-    '- exact user wording that matched, or the exact user wording searched',
     'Exact workbook match:',
-    '- Sheet: source_ref sheet name when available',
-    '- Row: source_ref row number when available',
-    '- Workbook text: exact workbook wording used',
-    '- Access: exact workbook access/removal wording or No access shown',
-    '- SAC: SAC shown on that workbook row, or No SAC shown on that workbook row',
+    '- Sheet:',
+    '- Row:',
+    '- Workbook text:',
+    '- Access:',
+    '- SAC:',
     'If no exact match:',
     '- No exact match found.',
     'Best closest match:',
@@ -430,28 +417,7 @@ function buildPlannerPrompt(taskText, localResult, sources) {
     '- SAC:',
     '- Why it is the closest:',
     'Strict conclusion:',
-    '- exact match / closest match / no SAC provable',
-    '',
-    'TASK TEXT',
-    taskText,
-    '',
-    'ALLOWED EVIDENCE REFERENCES',
-    JSON.stringify(sources.evidenceRefs, null, 2),
-    '',
-    'LOCAL RETRIEVAL HELPER',
-    JSON.stringify(localResult || null, null, 2),
-    '',
-    'CLIENT IMPORTED WORKBOOK EVIDENCE PREVIEW',
-    JSON.stringify(buildClientEvidencePreview(sources.clientEvidence), null, 2),
-    '',
-    'CLIENT IMPORTED WORKBOOK DEFINITIONS',
-    JSON.stringify(sources.clientEvidence?.definitions || [], null, 2),
-    '',
-    'SERVER SAC DEFINITIONS SOURCE',
-    JSON.stringify(sources.definitions, null, 2),
-    '',
-    'SERVER A320 MPD SOURCE',
-    JSON.stringify(sources.mpd, null, 2)
+    '- exact match / closest match / no SAC provable'
   ].join('\n');
 }
 
@@ -462,20 +428,12 @@ function normalizeAiResult(parsed, rawData, model, evidenceRefs = []) {
   const allowedEvidenceRefs = new Set(evidenceRefs.filter(Boolean));
   const why = Array.isArray(parsed?.why) ? parsed.why.map(String) : [];
   const checks = Array.isArray(parsed?.checks) ? parsed.checks.map(String) : [];
-  let codes = Array.isArray(parsed?.codes) ? parsed.codes.map((item) => ({
-    code: String(item?.code || ''),
-    role: String(item?.role || ''),
-    note: String(item?.note || ''),
-    evidence_ref: String(item?.evidence_ref || '')
-  })).filter((item) => item.code) : [];
+  let codes = Array.isArray(parsed?.codes) ? parsed.codes.map((item) => ({ code: String(item?.code || ''), role: String(item?.role || ''), note: String(item?.note || ''), evidence_ref: String(item?.evidence_ref || '') })).filter((item) => item.code) : [];
 
   if (allowedEvidenceRefs.size) {
     const unsupportedCodes = codes.filter((item) => !allowedEvidenceRefs.has(item.evidence_ref));
     codes = codes.filter((item) => allowedEvidenceRefs.has(item.evidence_ref));
-
-    if (unsupportedCodes.length) {
-      checks.push(`Server removed ${unsupportedCodes.length} code(s) because their evidence_ref was not in the allowed source rows.`);
-    }
+    if (unsupportedCodes.length) checks.push(`Server removed ${unsupportedCodes.length} code(s) because their evidence_ref was not in the allowed source rows.`);
   }
 
   if (status === 'MATCH' && !codes.length) {
@@ -483,25 +441,9 @@ function normalizeAiResult(parsed, rawData, model, evidenceRefs = []) {
     confidence = 'low';
     recommendation = 'Planner review required: the AI response did not include any code with an allowed evidence reference.';
   }
+  if (status === 'NO_SAC') codes = [];
 
-  if (status === 'NO_SAC') {
-    codes = [];
-  }
-
-  return {
-    mode: 'live_ai',
-    model,
-    status,
-    confidence,
-    answer: recommendation,
-    recommendation,
-    why,
-    checks,
-    codes,
-    trace: Array.isArray(parsed?.trace) ? parsed.trace.map(String) : [],
-    usage: rawData.usage || null,
-    response_id: rawData.id || null
-  };
+  return { mode: 'live_ai', model, status, confidence, answer: recommendation, recommendation, why, checks, codes, trace: Array.isArray(parsed?.trace) ? parsed.trace.map(String) : [], usage: rawData.usage || null, response_id: rawData.id || null };
 }
 
 async function callOpenAI(taskText, localResult, clientEvidence) {
@@ -511,69 +453,29 @@ async function callOpenAI(taskText, localResult, clientEvidence) {
   const payload = {
     model: cfg.model,
     input: [
-      {
-        role: 'system',
-        content: [{
-          type: 'input_text',
-          text: 'You are a strict workbook search engine for Lufthansa-Technik SAC planning. Follow the hard operating rules exactly, ignore conditional work by default, and return only valid JSON.'
-        }]
-      },
-      {
-        role: 'user',
-        content: [{ type: 'input_text', text: prompt }]
-      }
+      { role: 'system', content: [{ type: 'input_text', text: 'You are a strict workbook search engine for Lufthansa-Technik SAC planning. Follow the hard operating rules exactly, ignore conditional work by default, and return only valid JSON.' }] },
+      { role: 'user', content: [{ type: 'input_text', text: prompt }] }
     ],
-    text: {
-      format: {
-        type: 'json_schema',
-        name: 'sac_response',
-        strict: true,
-        schema: buildSacSchema()
-      }
-    },
+    text: { format: { type: 'json_schema', name: 'sac_response', strict: true, schema: buildSacSchema() } },
     max_output_tokens: cfg.maxOutputTokens
   };
-
-  if (supportsReasoning(cfg.model)) {
-    payload.reasoning = { effort: cfg.reasoningEffort };
-  }
-
+  if (supportsReasoning(cfg.model)) payload.reasoning = { effort: cfg.reasoningEffort };
   const data = await postResponsesApi(payload);
   const content = extractResponseText(data);
   assertCompleteResponse(data, content);
-
   let parsed;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error('OpenAI returned invalid JSON content.');
-  }
-
+  try { parsed = JSON.parse(content); } catch { throw new Error('OpenAI returned invalid JSON content.'); }
   return normalizeAiResult(parsed, data, cfg.model, sources.evidenceRefs);
 }
 
 async function pingOpenAI() {
   const { model, maxOutputTokens, reasoningEffort } = getOpenAIConfig();
-  const payload = {
-    model,
-    input: 'Reply with exactly OK.',
-    max_output_tokens: 256
-  };
-  if (supportsReasoning(model)) {
-    payload.reasoning = { effort: reasoningEffort };
-  }
+  const payload = { model, input: 'Reply with exactly OK.', max_output_tokens: 256 };
+  if (supportsReasoning(model)) payload.reasoning = { effort: reasoningEffort };
   const data = await postResponsesApi(payload);
   const text = extractResponseText(data);
   assertCompleteResponse(data, text);
-  return {
-    ok: true,
-    model,
-    maxOutputTokens,
-    reasoningEffort: supportsReasoning(model) ? reasoningEffort : 'not-applicable',
-    text,
-    usage: data.usage || null,
-    response_id: data.id || null
-  };
+  return { ok: true, model, maxOutputTokens, reasoningEffort: supportsReasoning(model) ? reasoningEffort : 'not-applicable', text, usage: data.usage || null, response_id: data.id || null };
 }
 
 function serveFile(res, filePath) {
@@ -588,34 +490,11 @@ function serveFile(res, filePath) {
 
 function handleOpenAIError(res, error) {
   const msg = String(error?.message || error);
-  if (msg.includes('429')) {
-    return sendJson(res, 429, {
-      error: 'OpenAI returned a rate limit or quota error. Check project billing, model access, or retry later.',
-      detail: msg
-    });
-  }
-  if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) {
-    return sendJson(res, 401, {
-      error: 'The OpenAI API key was rejected by OpenAI.',
-      detail: msg
-    });
-  }
-  if (msg.includes('404') && msg.toLowerCase().includes('model')) {
-    return sendJson(res, 502, {
-      error: 'The configured OpenAI model was not found or is not available to this project.',
-      detail: msg
-    });
-  }
-  if (msg.includes('max_output_tokens')) {
-    return sendJson(res, 502, {
-      error: 'OpenAI used the output budget before producing final JSON.',
-      detail: msg
-    });
-  }
-  return sendJson(res, 500, {
-    error: 'OpenAI request failed.',
-    detail: msg
-  });
+  if (msg.includes('429')) return sendJson(res, 429, { error: 'OpenAI returned a rate limit or quota error. Check project billing, model access, or retry later.', detail: msg });
+  if (msg.includes('401') || msg.toLowerCase().includes('invalid api key')) return sendJson(res, 401, { error: 'The OpenAI API key was rejected by OpenAI.', detail: msg });
+  if (msg.includes('404') && msg.toLowerCase().includes('model')) return sendJson(res, 502, { error: 'The configured OpenAI model was not found or is not available to this project.', detail: msg });
+  if (msg.includes('max_output_tokens')) return sendJson(res, 502, { error: 'OpenAI used the output budget before producing final JSON.', detail: msg });
+  return sendJson(res, 500, { error: 'OpenAI request failed.', detail: msg });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -634,52 +513,26 @@ const server = http.createServer(async (req, res) => {
       maxOutputTokens: cfg.maxOutputTokens,
       reasoningEffort: supportsReasoning(cfg.model) ? cfg.reasoningEffort : 'not-applicable',
       rules: SAC_SYSTEM_RULES.length,
-      sourceLimits: {
-        clientEvidenceRows: MAX_CLIENT_EVIDENCE_ROWS,
-        clientDefinitions: MAX_CLIENT_DEFINITIONS
-      },
-      sources: {
-        definitions: definitions.length,
-        mpd: mpd.length,
-        htmlLength: htmlRaw.length
-      }
+      sourceLimits: { clientEvidenceRows: MAX_CLIENT_EVIDENCE_ROWS, clientDefinitions: MAX_CLIENT_DEFINITIONS },
+      promptLimits: { evidenceRows: MAX_PROMPT_EVIDENCE_ROWS, definitions: MAX_PROMPT_DEFINITIONS, serverMpd: MAX_PROMPT_SERVER_MPD },
+      sources: { definitions: definitions.length, mpd: mpd.length, htmlLength: htmlRaw.length }
     });
   }
 
   if (req.method === 'GET' && urlPath === '/api/test-openai') {
-    try {
-      const result = await pingOpenAI();
-      return sendJson(res, 200, result);
-    } catch (error) {
-      const msg = String(error?.message || error);
-      return sendJson(res, 500, {
-        ok: false,
-        error: 'OpenAI ping failed.',
-        detail: msg
-      });
-    }
+    try { return sendJson(res, 200, await pingOpenAI()); } catch (error) { return sendJson(res, 500, { ok: false, error: 'OpenAI ping failed.', detail: String(error?.message || error) }); }
   }
 
   if (req.method === 'GET' && urlPath === '/db.json') {
-    try {
-      const db = fs.readFileSync(DB_PATH, 'utf-8');
-      return send(res, 200, db, 'application/json; charset=utf-8');
-    } catch {
-      return sendJson(res, 500, { error: 'Missing db.json' });
-    }
+    try { return send(res, 200, fs.readFileSync(DB_PATH, 'utf-8'), 'application/json; charset=utf-8'); } catch { return sendJson(res, 500, { error: 'Missing db.json' }); }
   }
 
   if (req.method === 'POST' && urlPath === '/api/agent') {
     try {
       const body = await readBody(req);
       const taskText = String(body?.taskText || body?.text || '').trim();
-      if (!taskText) {
-        return sendJson(res, 400, { error: 'taskText is required.' });
-      }
-
-      const localResult = body?.localResult || null;
-      const clientEvidence = body?.clientEvidence || null;
-      const result = await callOpenAI(taskText, localResult, clientEvidence);
+      if (!taskText) return sendJson(res, 400, { error: 'taskText is required.' });
+      const result = await callOpenAI(taskText, body?.localResult || null, body?.clientEvidence || null);
       return sendJson(res, 200, result);
     } catch (error) {
       return handleOpenAIError(res, error);
@@ -687,19 +540,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && urlPath === '/') {
-    try {
-      const html = fs.readFileSync(INDEX_PATH, 'utf-8');
-      return send(res, 200, html, 'text/html; charset=utf-8');
-    } catch {
-      return send(res, 500, 'Missing public/index.html', 'text/plain; charset=utf-8');
-    }
+    try { return send(res, 200, fs.readFileSync(INDEX_PATH, 'utf-8'), 'text/html; charset=utf-8'); } catch { return send(res, 500, 'Missing public/index.html', 'text/plain; charset=utf-8'); }
   }
 
   if (req.method === 'GET') {
     const safePath = path.normalize(path.join(PUBLIC_DIR, urlPath));
-    if (safePath.startsWith(PUBLIC_DIR) && fs.existsSync(safePath) && fs.statSync(safePath).isFile()) {
-      return serveFile(res, safePath);
-    }
+    if (safePath.startsWith(PUBLIC_DIR) && fs.existsSync(safePath) && fs.statSync(safePath).isFile()) return serveFile(res, safePath);
   }
 
   return send(res, 404, 'Not found', 'text/plain; charset=utf-8');
