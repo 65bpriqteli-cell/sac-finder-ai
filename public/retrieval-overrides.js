@@ -19,7 +19,7 @@ function localDebugTrace(result) {
 
   ranked.slice(0, 5).forEach((item, index) => {
     lines.push(
-      `#${index + 1} ${item.code} | ${item.matchType || 'related'} | score ${Math.round(item.score || 0)} | ${item.source?.ref || 'no ref'}`
+      `#${index + 1} ${item.code} | ${item.matchType || 'related'} | score ${Math.round(item.score || 0)} | taskRef ${item.taskRefHits || 0} | ${item.source?.ref || 'no ref'}`
     );
   });
 
@@ -35,7 +35,7 @@ function localDebugTrace(result) {
 
     (seg.candidateMatches || []).slice(0, 3).forEach((match, matchIndex) => {
       lines.push(
-        `  candidate ${matchIndex + 1}: ${match.code} | ${match.matchType || 'related'} | score ${Math.round(match.score || 0)} | critical ${match.criticalHits || 0} | penalty ${match.broadPenalty || 0} | ${match.ref || ''}`
+        `  candidate ${matchIndex + 1}: ${match.code} | ${match.matchType || 'related'} | score ${Math.round(match.score || 0)} | taskRef ${match.taskRefHits || 0} | critical ${match.criticalHits || 0} | penalty ${match.broadPenalty || 0} | ${match.ref || ''}`
       );
     });
   }
@@ -72,6 +72,7 @@ function renderLocalResult(result) {
     const scoreBits = [];
     if (item.score) scoreBits.push(`Score ${Math.round(item.score)}`);
     if (item.evidenceCount) scoreBits.push(`${item.evidenceCount} row(s)`);
+    if (item.taskRefHits) scoreBits.push(`${item.taskRefHits} task ref hit(s)`);
     if (item.criticalHits) scoreBits.push(`${item.criticalHits} critical hit(s)`);
     if (item.broadPenalty) scoreBits.push(`penalty ${Math.round(item.broadPenalty)}`);
     const scoreText = scoreBits.join(' • ') || 'No score';
@@ -125,6 +126,7 @@ function renderLocalResult(result) {
       `accessLike: ${seg.accessLike ? 'yes' : 'no'}`
     ];
     if (match) {
+      debugBits.push(`task refs: ${match.taskRefHits || 0}`);
       debugBits.push(`critical hits: ${match.criticalHits || 0}`);
       debugBits.push(`penalty: ${match.broadPenalty || 0}`);
     }
