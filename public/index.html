@@ -131,14 +131,14 @@
           </div>
 
           <div class="button-row top-gap">
-            <button id="runLocalBtn" class="btn btn-primary">Run local engine</button>
+            <button id="runLocalBtn" class="btn btn-primary" hidden aria-hidden="true" tabindex="-1">Run local engine</button>
             <button id="runAiBtn" class="btn btn-gold">Run AI copilot</button>
           </div>
 
           <div id="messageBox" class="message" hidden></div>
         </section>
 
-        <section class="card result-card">
+        <section class="card result-card" hidden aria-hidden="true" style="display:none;">
           <div class="section-head">
             <div>
               <p class="eyebrow">Deterministic pass</p>
